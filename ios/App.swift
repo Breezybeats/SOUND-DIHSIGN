@@ -50,7 +50,16 @@ struct SoundDihsignApp: App {
                     case .failure(let error): model.status = "Export failed: \(error.localizedDescription)"
                     }
                 }
-                .onOpenURL { model.loadPatch(from: $0) }
+                .fileExporter(isPresented: Binding(get: { model.isExportingFXP && !model.showPresetLibrary }, set: { model.isExportingFXP = $0 }), document: model.fxpExportDocument, contentType: .serumPresetFile, defaultFilename: model.patch.name) { result in
+                    switch result {
+                    case .success: model.status = "Serum FXP saved. Loading in Serum still needs verification."
+                    case .failure(let error): model.status = "Serum export failed: \(error.localizedDescription)"
+                    }
+                }
+                .onOpenURL { url in
+                    if url.pathExtension.lowercased() == "fxp" { model.importPresetFiles([url]) }
+                    else { model.loadPatch(from: url) }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { model.stopAudio() }
                 }

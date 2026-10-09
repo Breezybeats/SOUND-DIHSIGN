@@ -5,6 +5,8 @@ Config/*-Info.plist
 *.xcodeproj/
 *.xcworkspace/
 .DS_Store
+__pycache__/
+*.pyc
 *.sdpatch
 *.wav
 !examples/*.sdpatch

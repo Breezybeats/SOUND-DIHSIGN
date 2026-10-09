@@ -85,6 +85,9 @@ struct SynthView: View {
             Text("Export the current patch first if you want to keep it.")
         }
         .onDisappear { model.allNotesOff() }
+        .sheet(isPresented: $model.showPresetLibrary) {
+            PresetLibraryView(model: model)
+        }
     }
 
     private var header: some View {
@@ -97,6 +100,17 @@ struct SynthView: View {
                     .font(.system(.title2, design: .rounded).weight(.semibold))
                     .submitLabel(.done)
                     .accessibilityLabel("Patch name")
+                Button { model.showPresetLibrary = true } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.stack")
+                        Text(model.library.isEmpty ? "Import presets" : "Sound pool · \(model.selectedPresetIDs.count)/\(model.library.count)")
+                            .lineLimit(1)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .frame(minHeight: 44, alignment: .leading)
+                    .foregroundStyle(SynthPalette.mint)
+                }
+                .accessibilityLabel("Sound pool, \(model.selectedPresetIDs.count) selected from \(model.library.count) presets")
             }
             Spacer(minLength: 0)
             Button {
@@ -113,6 +127,9 @@ struct SynthView: View {
                 Button("New patch", systemImage: "plus") { confirmingReset = true }
                 Button("Import patch", systemImage: "square.and.arrow.down") { model.isImportingPatch = true }
                 Button("Export patch", systemImage: "square.and.arrow.up") { model.isExportingPatch = true }
+                if model.canExportFXP {
+                    Button("Export Serum FXP (experimental)", systemImage: "square.and.arrow.up") { model.isExportingFXP = true }
+                }
                 Button("Release all notes", systemImage: "hand.raised") { model.allNotesOff() }
             } label: {
                 Image(systemName: "ellipsis")
@@ -259,7 +276,7 @@ struct SynthView: View {
             .opacity(model.generatingOscillator != nil && !generatingThisOscillator ? 0.55 : 1)
         }
         .buttonStyle(FluidPressStyle())
-        .disabled(model.generatingOscillator != nil)
+        .disabled(model.generatingOscillator != nil || model.isRandomizing)
         .accessibilityLabel(generatingThisOscillator ? "Generating wavetable" : "Generate a random wavetable for oscillator \(["A", "B", "C"][model.selectedOscillator])")
         .accessibilityHint("Creates a new playable wavetable and selects wavetable mode")
     }
@@ -282,6 +299,9 @@ struct SynthView: View {
                 Text(octave > 0 ? "+\(octave)" : "\(octave)")
                     .font(.system(.title3, design: .rounded).weight(.semibold))
                     .monospacedDigit()
+                if model.lockedParameters.contains(oscillatorBase + 13) {
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(SynthPalette.mint)
+                }
             }
             .frame(minWidth: 42)
             .accessibilityElement(children: .ignore)
@@ -296,6 +316,11 @@ struct SynthView: View {
             .buttonStyle(FluidPressStyle())
             .disabled(octave >= 4)
             .accessibilityLabel("Raise oscillator \(["A", "B", "C"][model.selectedOscillator]) one octave")
+        }
+        .contextMenu {
+            Button(model.lockedParameters.contains(oscillatorBase + 13) ? "Unlock octave for randomization" : "Lock octave for randomization", systemImage: "lock") {
+                model.toggleParameterLock(id: oscillatorBase + 13)
+            }
         }
     }
 
@@ -335,7 +360,7 @@ struct SynthView: View {
 
     private var advancedOscillatorControls: [ParameterSpec] {
         let base = oscillatorBase
-        var controls: [ParameterSpec] = [.init(id: base + 4, title: "Semitones"), .init(id: base + 5, title: "Fine tune"), .init(id: base + 8, title: "Pan"), .init(id: base + 9, title: "Warp"), .init(id: base + 6, title: "Unison"), .init(id: base + 7, title: "Detune")]
+        var controls: [ParameterSpec] = [.init(id: base + 4, title: "Semitones"), .init(id: base + 5, title: "Fine tune"), .init(id: base + 8, title: "Pan"), .init(id: base + 9, title: "Warp"), .init(id: base + 6, title: oscillatorMode == 2 ? "Spread" : "Unison"), .init(id: base + 7, title: "Detune")]
         if oscillatorMode == 2 {
             controls += [.init(id: base + 10, title: "Scan"), .init(id: base + 11, title: "Grain size"), .init(id: base + 12, title: "Density")]
         }
@@ -388,7 +413,7 @@ struct SynthView: View {
             sectionTitle("Modulation", subtitle: "Connect a source. Make it move.")
             modulationSources
             if model.patch.routes.isEmpty {
-                Text("Drag a source onto any slider, or choose a source and tap the slider’s link button.")
+                Text("Tap Connect below any control, choose a source, and set how far it moves. Connect Macro 1 to several controls to move them together.")
                     .font(.subheadline).foregroundStyle(SynthPalette.muted)
                     .padding(.vertical, 12)
             } else {
@@ -437,10 +462,14 @@ struct SynthView: View {
                     .buttonStyle(FluidPressStyle())
                     .onDrag { NSItemProvider(object: "sounddihsign:source:\(source)" as NSString) }
                     .accessibilityAddTraits(model.selectedSource == source ? .isSelected : [])
-                    .accessibilityHint("Select, then tap a slider’s link button")
+                    .accessibilityHint("Choose this source when connecting a control, or drag it onto a slider")
                 }
             }
+            Text("LFO repeats. Envelope follows each note. Macro 1 moves the controls you connect to it.")
+                .font(.caption).foregroundStyle(SynthPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
             if model.selectedPage != .modulation {
+                SynthParameter(model: model, id: 140, title: "Macro 1")
                 Button { model.selectedPage = .modulation } label: {
                     Label("Routes · \(model.patch.routes.count)", systemImage: "arrow.up.right")
                         .font(.subheadline)
@@ -531,12 +560,15 @@ private struct SynthParameter: View {
     @ObservedObject var model: SynthModel
     let id: Int
     let title: String
+    var allowsConnections = true
     @State private var dropTarget = false
+    @State private var showingConnection = false
 
     private var range: ClosedRange<Float> { ParameterCatalog.descriptor(id)?.range ?? 0...1 }
     private var discrete: Bool { ParameterCatalog.descriptor(id)?.isDiscrete ?? false }
     private var logarithmic: Bool { [128, 132, 134, 135, 137].contains(id) || id < 96 && [11, 12].contains(id % 32) }
     private var hasRoute: Bool { model.patch.routes.contains { $0.destination == id } }
+    private var isLocked: Bool { model.lockedParameters.contains(id) }
     private var normalized: Float {
         let value = min(range.upperBound, max(range.lowerBound, model.value(id)))
         if logarithmic && range.lowerBound > 0 {
@@ -546,23 +578,21 @@ private struct SynthParameter: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title).font(.subheadline.weight(.medium)).lineLimit(1).minimumScaleFactor(0.85)
                 Spacer(minLength: 0)
-                if !discrete {
-                    Button { model.route(source: model.selectedSource, destination: id) } label: {
-                        Image(systemName: hasRoute ? "link.circle.fill" : "link")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(hasRoute ? SynthPalette.mint : SynthPalette.muted)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("Link \(sourceTitle(model.selectedSource)) to \(ParameterCatalog.name(id))")
-                } else {
-                    Spacer().frame(height: 44)
-                }
+                Text(displayValue)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(SynthPalette.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
+            ParameterVisual(model: model, id: id)
+            Text(ParameterVisual(model: model, id: id).caption)
+                .font(.caption)
+                .foregroundStyle(SynthPalette.muted)
+                .fixedSize(horizontal: false, vertical: true)
             Slider(value: Binding(get: { normalized }, set: { applyNormalized($0) }), in: 0...1)
                 .frame(minHeight: 44)
                 .accessibilityLabel(ParameterCatalog.name(id))
@@ -574,15 +604,43 @@ private struct SynthParameter: View {
                     @unknown default: break
                     }
                 }
-            Text(displayValue)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(SynthPalette.muted)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                if !discrete && allowsConnections {
+                    Button { showingConnection = true } label: {
+                        Label(hasRoute ? "Edit link" : "Connect", systemImage: hasRoute ? "point.3.connected.trianglepath.dotted" : "plus.circle")
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundStyle(SynthPalette.mint)
+                            .background(SynthPalette.mint.opacity(0.075), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .buttonStyle(FluidPressStyle())
+                    .accessibilityLabel("Connect a modulation source to \(ParameterCatalog.name(id))")
+                }
+                Button { model.toggleParameterLock(id: id) } label: {
+                    Image(systemName: isLocked ? "lock.fill" : "lock.open")
+                        .font(.caption.weight(.medium))
+                        .frame(width: 44, height: 44)
+                        .foregroundStyle(isLocked ? SynthPalette.mint : SynthPalette.muted)
+                        .background(isLocked ? SynthPalette.mint.opacity(0.075) : Color.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .accessibilityLabel("\(isLocked ? "Unlock" : "Lock") \(ParameterCatalog.name(id)) for randomization")
+                .accessibilityHint("A locked control keeps its value when randomizing")
+                .disabled(model.isRandomizing)
+            }
+            if !discrete && allowsConnections {
+                if hasRoute {
+                    Text(model.patch.routes.filter { $0.destination == id }.map { sourceTitle($0.source) }.joined(separator: " · "))
+                        .font(.caption2).foregroundStyle(SynthPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Connected sources")
+                        .accessibilityValue(model.patch.routes.filter { $0.destination == id }.map { sourceTitle($0.source) }.joined(separator: ", "))
+                }
+            }
         }
         .padding(.horizontal, dropTarget ? 6 : 0)
         .background(dropTarget ? SynthPalette.mint.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 12))
         .onDrop(of: [UTType.plainText], isTargeted: $dropTarget) { providers in
-            guard !discrete, let provider = providers.first else { return false }
+            guard !discrete, allowsConnections, let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: NSString.self) { object, _ in
                 guard let token = object as? String, token.hasPrefix("sounddihsign:source:"),
                       let source = Int(token.split(separator: ":").last ?? ""), (1...4).contains(source) else { return }
@@ -591,12 +649,19 @@ private struct SynthParameter: View {
             return true
         }
         .contextMenu {
-            if !discrete {
-                Button("Link \(sourceTitle(model.selectedSource))", systemImage: "link") { model.route(source: model.selectedSource, destination: id) }
+            if !discrete && allowsConnections {
+                Button("Connect a source", systemImage: "plus.circle") { showingConnection = true }
             }
             Button("Reset \(title)", systemImage: "arrow.counterclockwise") {
                 if let descriptor = ParameterCatalog.descriptor(id) { model.set(id, descriptor.defaultValue) }
             }
+            Button(isLocked ? "Unlock for randomization" : "Lock for randomization", systemImage: isLocked ? "lock.open" : "lock") {
+                model.toggleParameterLock(id: id)
+            }
+            .disabled(model.isRandomizing)
+        }
+        .sheet(isPresented: $showingConnection) {
+            ParameterConnectionSheet(model: model, destination: id)
         }
     }
 
@@ -628,7 +693,9 @@ private struct SynthParameter: View {
             switch id % 32 {
             case 4: return String(format: "%+.1f st", value)
             case 5: return String(format: "%+.0f ct", value)
-            case 6: return String(format: "%.0f voices", value)
+            case 6:
+                if Int(model.value(id - 6)) == 2 { return String(format: "%.0f / 4", value) }
+                return String(format: "%.0f voices", value)
             case 8:
                 if abs(value - 0.5) < 0.01 { return "Center" }
                 return String(format: "%.0f%% %@", abs(value - 0.5) * 200, value < 0.5 ? "L" : "R")
@@ -637,6 +704,204 @@ private struct SynthParameter: View {
             }
         }
         return String(format: "%.0f%%", value * 100)
+    }
+}
+
+@MainActor
+private struct ParameterConnectionSheet: View {
+    @ObservedObject var model: SynthModel
+    let destination: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var source: Int
+    @State private var amount: Float
+    @State private var originalAmounts: [Int: Float]
+    @State private var originalMacro: Float
+    @State private var committed = false
+
+    init(model: SynthModel, destination: Int) {
+        self.model = model
+        self.destination = destination
+        let routes = model.patch.routes.filter { $0.destination == destination }
+        let first = routes.first { $0.source == model.selectedSource } ?? routes.first
+        let defaultSource = destination == 140 && model.selectedSource == 4 ? 1 : model.selectedSource
+        _source = State(initialValue: first?.source ?? defaultSource)
+        _amount = State(initialValue: first?.amount ?? 0.4)
+        _originalAmounts = State(initialValue: Dictionary(uniqueKeysWithValues: routes.map { ($0.slot, $0.amount) }))
+        _originalMacro = State(initialValue: model.value(140))
+    }
+
+    private var existing: ModulationRoute? {
+        model.patch.routes.first { $0.source == source && $0.destination == destination }
+    }
+    private var canSave: Bool {
+        !(destination == 140 && source == 4) && (existing != nil || model.patch.routes.count < 16)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(ParameterCatalog.name(destination))
+                            .font(.system(.title2, design: .rounded).weight(.semibold))
+                        ParameterVisual(model: model, id: destination)
+                        Text(ParameterVisual(model: model, id: destination).caption)
+                            .font(.subheadline).foregroundStyle(SynthPalette.muted)
+                    }
+                    .synthPanel()
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("What moves this control?").font(.headline)
+                        ForEach(1...4, id: \.self) { candidate in
+                            Button {
+                                source = candidate
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: sourceIcon(candidate))
+                                        .font(.title3).frame(width: 28)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(sourceTitle(candidate)).font(.subheadline.weight(.semibold))
+                                        Text(sourceExplanation(candidate))
+                                            .font(.caption).foregroundStyle(SynthPalette.muted)
+                                    }
+                                    Spacer()
+                                    Image(systemName: source == candidate ? "checkmark.circle.fill" : "circle")
+                                }
+                                .padding(12)
+                                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                                .foregroundStyle(source == candidate ? SynthPalette.mint : SynthPalette.text)
+                                .background(source == candidate ? SynthPalette.mint.opacity(0.075) : SynthPalette.panel, in: RoundedRectangle(cornerRadius: 16))
+                            }
+                            .buttonStyle(FluidPressStyle())
+                            .disabled(destination == 140 && candidate == 4)
+                            .accessibilityAddTraits(source == candidate ? .isSelected : [])
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Depth").font(.headline)
+                            Spacer()
+                            Text(String(format: "%+.0f%%", amount * 100))
+                                .font(.subheadline.monospacedDigit()).foregroundStyle(SynthPalette.mint)
+                        }
+                        Slider(value: Binding(get: { amount }, set: { next in
+                            amount = next
+                            if let existing { model.setRouteAmount(slot: existing.slot, amount: next) }
+                        }), in: -1...1)
+                            .frame(minHeight: 44)
+                            .accessibilityLabel("Connection depth")
+                            .accessibilityValue(String(format: "%+.0f percent", amount * 100))
+                        Text("Positive follows the source. Negative reverses it. Zero adds no movement.")
+                            .font(.caption).foregroundStyle(SynthPalette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if existing != nil {
+                            Text("Depth changes preview your saved connection now.")
+                                .font(.caption).foregroundStyle(SynthPalette.muted)
+                        } else {
+                            Text("Save the connection, then play a note to hear it.")
+                                .font(.caption).foregroundStyle(SynthPalette.muted)
+                        }
+                    }
+                    .synthPanel()
+                    if source == 4 {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("One control, many changes").font(.headline)
+                            Text("Choose Macro 1 on other controls too. Move this slider to shape them together.")
+                                .font(.subheadline).foregroundStyle(SynthPalette.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                            SynthParameter(model: model, id: 140, title: "Macro 1", allowsConnections: false)
+                        }
+                        .synthPanel()
+                    }
+                    if let existing {
+                        Button(role: .destructive) {
+                            restorePreviews(except: existing.slot)
+                            model.removeRoute(slot: existing.slot)
+                            committed = true
+                            dismiss()
+                        } label: {
+                            Label("Remove this connection", systemImage: "trash")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                    }
+                    if !canSave {
+                        Text(destination == 140 && source == 4 ? "Choose a different source to move Macro 1." : "All 16 connections are in use. Remove one in Mod to add another.")
+                            .font(.subheadline).foregroundStyle(SynthPalette.muted)
+                    }
+                }
+                .padding(20)
+            }
+            .background(.white)
+            .navigationTitle("Connect")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }.disabled(!canSave)
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Play to preview")
+                    .font(.caption.weight(.medium)).foregroundStyle(SynthPalette.muted)
+                TouchKeyboard(baseNote: (model.octave + 1) * 12,
+                              onNoteOn: { note, velocity in model.noteOn(note, velocity: velocity) },
+                              onNoteOff: { model.noteOff($0) })
+                    .frame(height: 76)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .padding(12)
+            .background(.white)
+        }
+        .tint(SynthPalette.mint)
+        .preferredColorScheme(.light)
+        .presentationDragIndicator(.visible)
+        .onChange(of: source) { _, next in
+            restorePreviews()
+            model.selectedSource = next
+            amount = existing?.amount ?? 0.4
+        }
+        .onDisappear {
+            model.allNotesOff()
+            if !committed {
+                restorePreviews()
+                if model.value(140) != originalMacro { model.set(140, originalMacro) }
+            }
+        }
+    }
+
+    private func save() {
+        if let existing {
+            restorePreviews(except: existing.slot)
+            model.setRouteAmount(slot: existing.slot, amount: amount)
+        } else {
+            guard canSave else { return }
+            restorePreviews()
+            model.route(source: source, destination: destination, amount: amount)
+            guard model.patch.routes.contains(where: { $0.source == source && $0.destination == destination }) else { return }
+        }
+        model.selectedSource = source
+        committed = true
+        dismiss()
+    }
+
+    private func restorePreviews(except slot: Int? = nil) {
+        for (savedSlot, original) in originalAmounts where savedSlot != slot {
+            if model.patch.routes.first(where: { $0.slot == savedSlot })?.amount != original {
+                model.setRouteAmount(slot: savedSlot, amount: original)
+            }
+        }
+    }
+
+    private func sourceExplanation(_ source: Int) -> String {
+        switch source {
+        case 1: return "A repeating wave for automatic movement."
+        case 2: return "Follows a note’s attack, decay and release."
+        case 3: return "Responds to how strongly you play."
+        default: return "Move one slider to shape several controls."
+        }
     }
 }
 
@@ -651,7 +916,7 @@ private struct FluidPressStyle: ButtonStyle {
     }
 }
 
-private struct SynthWaveform: View {
+struct SynthWaveform: View {
     var table: Int
     var position: Float
     var warp: Float

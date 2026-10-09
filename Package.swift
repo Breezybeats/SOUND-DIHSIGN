@@ -5,6 +5,6 @@ let package = Package(
     name: "SoundDihsignCore",
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [.library(name: "SoundCore", targets: ["SoundCore"])],
-    targets: [.target(name: "SoundCore", path: "Sources/SoundCore", publicHeadersPath: "include")],
+    targets: [.target(name: "SoundCore", path: "Sources/SoundCore", publicHeadersPath: "include", linkerSettings: [.linkedLibrary("z")])],
     cxxLanguageStandard: .cxx17
 )

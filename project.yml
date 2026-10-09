@@ -11,6 +11,8 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CLANG_CXX_LANGUAGE_STANDARD: c++17
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "2"
 targets:
   SoundDihsign:
     type: application
@@ -29,6 +31,16 @@ targets:
             CFBundleTypeRole: Editor
             LSHandlerRank: Owner
             LSItemContentTypes: [com.breezybeats.sounddihsign.patch]
+          - CFBundleTypeName: Serum FXP Preset
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.breezybeats.sounddihsign.serum-fxp]
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.breezybeats.sounddihsign.serum-fxp
+            UTTypeDescription: Serum FXP Preset
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [fxp]
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.breezybeats.sounddihsign.patch
             UTTypeDescription: SOUND DIHSIGN Patch

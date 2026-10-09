@@ -24,6 +24,29 @@ final class SynthModel: ObservableObject {
     @Published var selectedSource = 1
     @Published var generatingOscillator: Int?
     @Published var generatedWavetableNames: [Int: String] = [:]
+    @Published var showPresetLibrary = false
+    @Published var isImportingPresetFiles = false
+    @Published var isImportingPresets = false
+    @Published var isRandomizing = false
+    @Published var library: [LibraryPreset] = []
+    @Published var selectedPresetIDs = Set<String>() {
+        didSet {
+            if selectedPresetIDs != oldValue { selectionRevision &+= 1 }
+            UserDefaults.standard.set(Array(selectedPresetIDs), forKey: "SoundDihsign.selectedPresets")
+        }
+    }
+    @Published var lockedParameters = Set<Int>()
+    @Published var lastRandomizationSummary = ""
+    @Published var isExportingFXP = false {
+        didSet {
+            if isExportingFXP, let generatedFXPData {
+                fxpExportDocument = SerumPresetDocument(data: generatedFXPData)
+            }
+        }
+    }
+    @Published var fxpExportDocument = SerumPresetDocument()
+    @Published private var generatedFXPData: Data?
+    @Published private var randomizationBackup: SoundPatch?
 
     private var audio = AudioController()
     private var activeNotes: [Int: Float] = [:]
@@ -32,6 +55,13 @@ final class SynthModel: ObservableObject {
     private var generationID: UUID?
     private var patchRevision: UInt64 = 0
     private var generatedCounts: [Int: Int] = [:]
+    private var controlRevision: UInt64 = 0
+    private var selectionRevision: UInt64 = 0
+    private var randomizationBackupFXP: Data?
+    private var randomizationBackupSummary = ""
+
+    var canExportFXP: Bool { generatedFXPData != nil }
+    var canUndoRandomization: Bool { randomizationBackup != nil }
 
     init() {
         do { try audio.prepare(patch) } catch { status = error.localizedDescription }
@@ -65,6 +95,22 @@ final class SynthModel: ObservableObject {
                 } catch { self.status = error.localizedDescription }
             }
         })
+        let restoredSelection = Set(UserDefaults.standard.stringArray(forKey: "SoundDihsign.selectedPresets") ?? [])
+        let restoredSelectionRevision = selectionRevision
+        Task { [weak self] in
+            do {
+                let entries = try await Task.detached(priority: .utility) {
+                    try PresetLibraryStore.loadLibrary()
+                }.value
+                guard let self else { return }
+                self.mergePresetEntries(entries)
+                if self.selectionRevision == restoredSelectionRevision {
+                    self.selectedPresetIDs.formUnion(restoredSelection.intersection(Set(entries.map(\.id))))
+                }
+            } catch {
+                self?.status = "Sound pool could not be loaded: \(error.localizedDescription)"
+            }
+        }
     }
 
     func value(_ id: Int) -> Float { patch.parameters[String(id)] ?? ParameterCatalog.descriptor(id)?.defaultValue ?? 0 }
@@ -78,6 +124,8 @@ final class SynthModel: ObservableObject {
             status = "Wavetable generation canceled."
         }
         patch.parameters[String(id)] = clean
+        controlRevision &+= 1
+        generatedFXPData = nil
         audio.setParameter(id, clean)
     }
 
@@ -90,7 +138,7 @@ final class SynthModel: ObservableObject {
     /// Generates original harmonic frames off the main thread, then replaces only
     /// this oscillator's wavetable. Pitch, levels, envelopes and routes are kept.
     func generateWavetable(for oscillator: Int) {
-        guard (0..<3).contains(oscillator), generatingOscillator == nil else { return }
+        guard (0..<3).contains(oscillator), generatingOscillator == nil, !isRandomizing else { return }
         let id = UUID()
         let revision = patchRevision
         let seed = UInt32.random(in: UInt32.min...UInt32.max)
@@ -175,6 +223,8 @@ final class SynthModel: ObservableObject {
         }
         let route = ModulationRoute(slot: slot, source: source, destination: destination, amount: min(1, max(-1, amount)))
         patch.routes.append(route)
+        controlRevision &+= 1
+        generatedFXPData = nil
         audio.setRoute(route)
         status = "\(ParameterCatalog.sourceName(source)) → \(descriptor.name)"
     }
@@ -182,11 +232,15 @@ final class SynthModel: ObservableObject {
     func setRouteAmount(slot: Int, amount: Float) {
         guard amount.isFinite, let index = patch.routes.firstIndex(where: { $0.slot == slot }) else { return }
         patch.routes[index].amount = min(1, max(-1, amount))
+        controlRevision &+= 1
+        generatedFXPData = nil
         audio.setRoute(patch.routes[index])
     }
 
     func removeRoute(slot: Int) {
         patch.routes.removeAll { $0.slot == slot }
+        controlRevision &+= 1
+        generatedFXPData = nil
         audio.clearRoute(slot)
     }
 
@@ -212,12 +266,193 @@ final class SynthModel: ObservableObject {
         try audio.prepare(next)
         patch = next
         patchRevision &+= 1
+        generatedFXPData = nil
         invalidateGeneration()
         audioReady = false
         if wasRunning { startAudio() }
         if audioReady {
             for (note, velocity) in heldNotes { noteOn(note, velocity: velocity) }
         }
+    }
+
+    func importPresetFiles(_ urls: [URL]) {
+        guard !isImportingPresets else { return }
+        guard !urls.isEmpty else { return }
+        isImportingPresets = true
+        showPresetLibrary = true
+        status = "Adding presets to your sound pool…"
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                var entries: [LibraryPreset] = []
+                var failures: [String] = []
+                for url in urls.prefix(512) {
+                    do { entries.append(try PresetLibraryStore.importFile(url)) }
+                    catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+                }
+                if urls.count > 512 { failures.append("Select up to 512 files in one import.") }
+                return (entries, failures)
+            }.value
+            guard let self else { return }
+            self.isImportingPresets = false
+            let addedCount = self.mergePresetEntries(result.0)
+            self.library.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            self.selectedPresetIDs.formUnion(result.0.map(\.id))
+            let message = "Added \(addedCount) presets to your sound pool."
+            self.status = result.1.isEmpty ? message : "\(message) \(result.1.count) could not be added. \(result.1.first ?? "")"
+        }
+    }
+
+    func addCurrentPatchToLibrary() {
+        guard !isImportingPresets else { return }
+        isImportingPresets = true
+        let current = patch
+        Task { [weak self] in
+            do {
+                let entry = try await Task.detached(priority: .userInitiated) {
+                    try PresetLibraryStore.savePatch(current)
+                }.value
+                guard let self else { return }
+                let added = self.mergePresetEntries([entry])
+                self.selectedPresetIDs.insert(entry.id)
+                self.status = added == 0 ? "\(entry.name) is already in your sound pool." : "Added \(entry.name) to your sound pool."
+            } catch { self?.status = "Could not save to the sound pool: \(error.localizedDescription)" }
+            self?.isImportingPresets = false
+        }
+    }
+
+    func togglePresetSelection(id: String) {
+        guard !isRandomizing, library.contains(where: { $0.id == id }) else { return }
+        if selectedPresetIDs.contains(id) { selectedPresetIDs.remove(id) }
+        else { selectedPresetIDs.insert(id) }
+    }
+
+    @discardableResult
+    private func mergePresetEntries(_ entries: [LibraryPreset]) -> Int {
+        var seen = Set(library.map(\.id))
+        let added = entries.filter { seen.insert($0.id).inserted }
+        library.append(contentsOf: added)
+        return added.count
+    }
+
+    func removePreset(id: String) {
+        guard !isImportingPresets, !isRandomizing, let entry = library.first(where: { $0.id == id }) else { return }
+        isImportingPresets = true
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try PresetLibraryStore.remove(entry)
+                }.value
+                guard let self else { return }
+                self.library.removeAll { $0.id == id }
+                self.selectedPresetIDs.remove(id)
+                self.status = "Removed \(entry.name) from the sound pool."
+            } catch { self?.status = "Could not remove the preset: \(error.localizedDescription)" }
+            self?.isImportingPresets = false
+        }
+    }
+
+    func selectAllPresets() {
+        guard !isRandomizing else { return }
+        selectedPresetIDs = Set(library.map(\.id))
+    }
+
+    func clearPresetSelection() {
+        guard !isRandomizing else { return }
+        // Record an explicit Clear even if the initial asynchronous load has
+        // not populated the selection yet.
+        selectionRevision &+= 1
+        selectedPresetIDs.removeAll()
+    }
+
+    func toggleParameterLock(id: Int) {
+        guard !isRandomizing, ParameterCatalog.descriptor(id) != nil else { return }
+        if lockedParameters.contains(id) { lockedParameters.remove(id) }
+        else { lockedParameters.insert(id) }
+    }
+
+    func auditionPreset(id: String) {
+        guard !isRandomizing, let entry = library.first(where: { $0.id == id }) else { return }
+        isRandomizing = true
+        let revision = patchRevision
+        let controls = controlRevision
+        Task { [weak self] in
+            defer { self?.isRandomizing = false }
+            do {
+                let next = try await Task.detached(priority: .userInitiated) {
+                    try PresetLibraryStore.loadPatch(entry)
+                }.value
+                guard let self else { return }
+                guard self.patchRevision == revision, self.controlRevision == controls else {
+                    self.status = "The sound changed while loading. Choose the preset again."
+                    return
+                }
+                try self.replacePatch(next.validated(), resumeHeldNotes: true)
+                self.generatedWavetableNames.removeAll()
+                self.randomizationBackup = nil
+                self.lastRandomizationSummary = "Previewing \(entry.name). Serum effects and motion may sound different."
+                let missingTable = entry.warnings.first {
+                    $0.localizedCaseInsensitiveContains("muted") || $0.localizedCaseInsensitiveContains("external wavetable")
+                }
+                self.status = missingTable.map { "Loaded preview. \(String($0.prefix(180)))" }
+                    ?? "Preview ready. Play the keyboard to listen."
+                self.showPresetLibrary = false
+            } catch { self?.status = "Preview could not be loaded: \(error.localizedDescription)" }
+        }
+    }
+
+    func randomizeFromSelection() {
+        guard !isRandomizing, !isImportingPresets, generatingOscillator == nil else { return }
+        let entries = library.filter { selectedPresetIDs.contains($0.id) }
+        guard !entries.isEmpty else {
+            showPresetLibrary = true
+            status = "Choose at least one preset for your sound pool."
+            return
+        }
+        let current = patch
+        let previousFXP = generatedFXPData
+        let previousSummary = lastRandomizationSummary
+        let locked = lockedParameters
+        let revision = patchRevision
+        let controls = controlRevision
+        isRandomizing = true
+        status = "Mixing settings from your selected presets…"
+        Task { [weak self] in
+            defer { self?.isRandomizing = false }
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try PresetLibraryStore.randomize(entries: entries, current: current, locked: locked)
+                }.value
+                guard let self else { return }
+                guard self.patchRevision == revision, self.controlRevision == controls else {
+                    self.status = "The sound changed during generation. Generate again to keep your latest edits."
+                    return
+                }
+                try self.replacePatch(result.patch.validated(), resumeHeldNotes: true)
+                self.randomizationBackup = current
+                self.randomizationBackupFXP = previousFXP
+                self.randomizationBackupSummary = previousSummary
+                self.generatedFXPData = result.fxpData
+                self.generatedWavetableNames.removeAll()
+                self.lastRandomizationSummary = result.summary
+                self.status = result.summary.localizedCaseInsensitiveContains("muted")
+                    ? "New mix ready. Some oscillator previews are muted because their wavetables are not embedded."
+                    : "New sound ready. Play the keyboard or generate another."
+                self.showPresetLibrary = false
+            } catch { self?.status = "Could not generate a sound: \(error.localizedDescription)" }
+        }
+    }
+
+    func undoRandomization() {
+        guard !isRandomizing, let previous = randomizationBackup else { return }
+        do {
+            try replacePatch(previous.validated(), resumeHeldNotes: true)
+            generatedFXPData = randomizationBackupFXP
+            lastRandomizationSummary = randomizationBackupSummary
+            randomizationBackup = nil
+            randomizationBackupFXP = nil
+            generatedWavetableNames.removeAll()
+            status = "Previous sound restored."
+        } catch { status = "Could not restore the sound: \(error.localizedDescription)" }
     }
 
     func importSample(from url: URL) {
