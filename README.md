@@ -1,6 +1,6 @@
 # SOUND DIHSIGN
 
-Version 0.2 adds a personal preset pool to the native iPhone sound-design app. Import your Serum `.fxp` presets, choose donors, generate a remix, and try it on the bottom keyboard. The white interface uses native controls, illustrated parameter guides and a simple Connect sheet. A macOS companion transfers app patches and renders audio.
+Version 0.2.1 includes a personal preset pool and a shared Files picker for the native iPhone sound-design app. Import your Serum `.fxp` presets, choose donors, generate a remix, and try it on the bottom keyboard. The white interface uses native controls, illustrated parameter guides and a simple Connect sheet. A macOS companion transfers app patches and renders audio.
 
 The iPhone uses an independent synthesis engine. Its Serum imports are **simplified previews**, and experimental `.fxp` exports have been checked as binary files but have **not been loaded or compared in Serum**. This is not a complete Serum 2 recreation; native `.SerumPreset` writing remains unavailable.
 
@@ -25,6 +25,8 @@ Use a Mac with a compatible Xcode 15 or newer and [XcodeGen](https://github.com/
 Regenerate the Xcode project after each source update so new Swift files and assets are included. Re-select the signing team if regeneration clears it. Choose **SoundDihsignCompanion** to build the Mac app instead.
 
 The local Swift package supplies the C++ engine and links the system zlib library. This repository includes source, not a signed iPhone app or an App Store release. Apple SDK compilation, signing and on-device validation are still required.
+
+Version 0.2.1 replaces the studio's three stacked import pickers with one shared picker. The patch menu now offers **Import patch or presets**: choose one `.sdpatch` or app-patch `.json` to restore a sound, or choose Serum `.fxp` files to add them to your Sound pool. After adding presets this way, tap **Sound pool** beneath the sound name to select and generate. Audio and wavetable import use the same picker with their own file filters and retain the oscillator selected when you tapped Import.
 
 ## Make a personal sound pool
 

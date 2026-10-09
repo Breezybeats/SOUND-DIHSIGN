@@ -3,6 +3,7 @@ import AVFoundation
 import SoundCore
 
 enum SynthPage: String, CaseIterable { case oscillator, filter, envelopes, effects, modulation }
+enum SynthFileImport: Equatable { case patch, sample, wavetable }
 
 @MainActor
 final class SynthModel: ObservableObject {
@@ -13,10 +14,11 @@ final class SynthModel: ObservableObject {
     @Published var status = "Ready to make a sound"
     @Published var audioReady = false
     @Published var sampleImportOscillator: Int?
-    @Published var isImportingSample = false
     @Published var wavetableImportOscillator: Int?
-    @Published var isImportingWavetable = false
-    @Published var isImportingPatch = false
+    // Keep the import kind after dismissal: SwiftUI can clear the presentation
+    // binding before delivering the Files picker's completion callback.
+    @Published private(set) var fileImportKind: SynthFileImport = .patch
+    @Published var isImportingFile = false
     @Published var isExportingPatch = false {
         didSet { if isExportingPatch { exportDocument = PatchDocument(patch: patch) } }
     }
@@ -244,7 +246,36 @@ final class SynthModel: ObservableObject {
         audio.clearRoute(slot)
     }
 
+    func requestFileImport(_ kind: SynthFileImport, oscillator: Int? = nil) {
+        guard !isImportingFile else { return }
+        switch kind {
+        case .patch: break
+        case .sample, .wavetable:
+            guard let oscillator, (0..<3).contains(oscillator) else { return }
+            if kind == .sample { sampleImportOscillator = oscillator }
+            else { wavetableImportOscillator = oscillator }
+        }
+        fileImportKind = kind
+        isImportingFile = true
+    }
+
+    func importPatchFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        if urls.count == 1, let url = urls.first,
+           ["sdpatch", "json"].contains(url.pathExtension.lowercased()) {
+            loadPatch(from: url)
+        } else {
+            // Keep the studio visible while the root Files picker dismisses.
+            // The Sound pool button opens the imported collection afterward.
+            importPresetFiles(urls, presentLibrary: false)
+        }
+    }
+
     func loadPatch(from url: URL) {
+        if url.pathExtension.lowercased() == "fxp" {
+            importPresetFiles([url])
+            return
+        }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -275,11 +306,11 @@ final class SynthModel: ObservableObject {
         }
     }
 
-    func importPresetFiles(_ urls: [URL]) {
+    func importPresetFiles(_ urls: [URL], presentLibrary: Bool = true) {
         guard !isImportingPresets else { return }
         guard !urls.isEmpty else { return }
         isImportingPresets = true
-        showPresetLibrary = true
+        if presentLibrary { showPresetLibrary = true }
         status = "Adding presets to your sound pool…"
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
@@ -297,7 +328,8 @@ final class SynthModel: ObservableObject {
             let addedCount = self.mergePresetEntries(result.0)
             self.library.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             self.selectedPresetIDs.formUnion(result.0.map(\.id))
-            let message = "Added \(addedCount) presets to your sound pool."
+            let nextStep = self.showPresetLibrary ? "" : " Tap Sound pool to generate a remix."
+            let message = "Added \(addedCount) presets to your sound pool.\(nextStep)"
             self.status = result.1.isEmpty ? message : "\(message) \(result.1.count) could not be added. \(result.1.first ?? "")"
         }
     }

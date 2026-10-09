@@ -125,7 +125,7 @@ struct SynthView: View {
             .accessibilityLabel(model.audioReady ? "Stop audio" : "Start audio")
             Menu {
                 Button("New patch", systemImage: "plus") { confirmingReset = true }
-                Button("Import patch", systemImage: "square.and.arrow.down") { model.isImportingPatch = true }
+                Button("Import patch or presets", systemImage: "square.and.arrow.down") { model.requestFileImport(.patch) }
                 Button("Export patch", systemImage: "square.and.arrow.up") { model.isExportingPatch = true }
                 if model.canExportFXP {
                     Button("Export Serum FXP (experimental)", systemImage: "square.and.arrow.up") { model.isExportingFXP = true }
@@ -196,8 +196,7 @@ struct SynthView: View {
                     parameterGrid(advancedOscillatorControls)
                     if oscillatorMode == 0 {
                         Button {
-                            model.wavetableImportOscillator = model.selectedOscillator
-                            model.isImportingWavetable = true
+                            model.requestFileImport(.wavetable, oscillator: model.selectedOscillator)
                         } label: {
                             Label("Import wavetable", systemImage: "square.and.arrow.down")
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -235,8 +234,7 @@ struct SynthView: View {
             }
             Divider()
             Button("Import wavetable", systemImage: "square.and.arrow.down") {
-                model.wavetableImportOscillator = model.selectedOscillator
-                model.isImportingWavetable = true
+                model.requestFileImport(.wavetable, oscillator: model.selectedOscillator)
             }
         } label: {
             HStack(spacing: 12) {
@@ -341,8 +339,7 @@ struct SynthView: View {
             Text(usingTable ? "Explore your table as harmonics." : sampleExplanation)
                 .font(.subheadline).foregroundStyle(SynthPalette.muted)
             Button {
-                model.sampleImportOscillator = model.selectedOscillator
-                model.isImportingSample = true
+                model.requestFileImport(.sample, oscillator: model.selectedOscillator)
             } label: {
                 Label(usingTable ? "Use audio instead" : loaded ? "Replace audio" : "Import audio", systemImage: "square.and.arrow.down")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

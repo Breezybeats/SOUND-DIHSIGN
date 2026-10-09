@@ -26,22 +26,22 @@ struct SoundDihsignApp: App {
                 }
             }
                 .preferredColorScheme(.light)
-                .fileImporter(isPresented: $model.isImportingSample, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
+                // One root importer serves every studio import action. Stacking
+                // separate importers here can leave earlier buttons without a picker.
+                .fileImporter(isPresented: $model.isImportingFile, allowedContentTypes: importContentTypes,
+                              allowsMultipleSelection: model.fileImportKind == .patch) { result in
                     switch result {
-                    case .success(let urls): if let url = urls.first { model.importSample(from: url) }
-                    case .failure(let error): model.status = "Sample picker: \(error.localizedDescription)"
-                    }
-                }
-                .fileImporter(isPresented: $model.isImportingPatch, allowedContentTypes: [.soundDesignPatch, .json], allowsMultipleSelection: false) { result in
-                    switch result {
-                    case .success(let urls): if let url = urls.first { model.loadPatch(from: url) }
-                    case .failure(let error): model.status = "Patch picker: \(error.localizedDescription)"
-                    }
-                }
-                .fileImporter(isPresented: $model.isImportingWavetable, allowedContentTypes: [.wav], allowsMultipleSelection: false) { result in
-                    switch result {
-                    case .success(let urls): if let url = urls.first { model.importWavetable(from: url) }
-                    case .failure(let error): model.status = "Wavetable picker: \(error.localizedDescription)"
+                    case .success(let urls):
+                        switch model.fileImportKind {
+                        case .patch: model.importPatchFiles(urls)
+                        case .sample: if let url = urls.first { model.importSample(from: url) }
+                        case .wavetable: if let url = urls.first { model.importWavetable(from: url) }
+                        }
+                    case .failure(let error):
+                        let pickerError = error as NSError
+                        if pickerError.domain != NSCocoaErrorDomain || pickerError.code != CocoaError.userCancelled.rawValue {
+                            model.status = "Import picker: \(error.localizedDescription)"
+                        }
                     }
                 }
                 .fileExporter(isPresented: $model.isExportingPatch, document: model.exportDocument, contentType: .soundDesignPatch, defaultFilename: model.patch.name) { result in
@@ -57,12 +57,19 @@ struct SoundDihsignApp: App {
                     }
                 }
                 .onOpenURL { url in
-                    if url.pathExtension.lowercased() == "fxp" { model.importPresetFiles([url]) }
-                    else { model.loadPatch(from: url) }
+                    model.importPatchFiles([url])
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { model.stopAudio() }
                 }
+        }
+    }
+
+    private var importContentTypes: [UTType] {
+        switch model.fileImportKind {
+        case .patch: return [.soundDesignPatch, .serumPresetFile, .json, .data]
+        case .sample: return [.audio]
+        case .wavetable: return [.wav]
         }
     }
 }

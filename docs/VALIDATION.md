@@ -5,6 +5,8 @@ Validation date: October 9, 2026. Current machine: Linux x86_64, GCC C++17 and a
 
 ## Version 0.2 preset and library results
 
+Version 0.2.1 addresses the report that **Import patch** did not open Files. The studio now has one root `fileImporter` with a separate, persistent import kind instead of three stacked importer modifiers. That kind remains available after SwiftUI clears the presentation binding, so completion can still dispatch a patch, audio sample or wavetable correctly. The menu accepts FXPs as well as app patches; FXPs add to the personal pool, and the studio stays visible while the root picker dismisses to avoid immediately presenting a competing library sheet. Swift 5 syntax parsing and review passed for the updated iOS sources. The actual picker presentation, cancel/reopen behavior and Apple SDK compilation still require device/Xcode validation.
+
 The private validation collection contains **299 Serum FXP files, approximately 236 MiB**. Originals remain outside the checkout under the cloud attachment directory. None is bundled, published or added as a test fixture. Public tests construct synthetic data; the real collection is an optional local test input.
 
 The Python inspector's **11 synthetic tests passed**, and inspection of all 299 real files verified all five observed state layouts:
@@ -108,7 +110,7 @@ For the interface update, tree-sitter-swift parsed all 12 Swift files under `ios
 
 ## Apple-platform acceptance checklist
 
-1. Regenerate `SoundDihsign.xcodeproj` with XcodeGen, including existing user projects, so the new Swift file and asset catalog are included. Reselect the signing team if needed, build both schemes, and resolve compiler/API issues before describing the updated apps as runnable.
+1. Regenerate `SoundDihsign.xcodeproj` with XcodeGen, including existing user projects, so the new Swift file and asset catalog are included. Reselect the signing team if needed, build both schemes, and resolve compiler/API issues before describing the updated apps as runnable. In version 0.2.1, verify **Import patch or presets** opens Files, loads a single app patch, and adds multiple FXPs to Sound pool. Cancel and reopen each import kind, alternate patch/audio/wavetable imports, and verify the correct filters and original oscillator target.
 2. Run on a physical iPhone: enable audio, play/release chords and glissandi, change keyboard octave, check panic and VoiceOver, and verify that exposed sliders and Advanced settings affect their intended controls.
 3. Generate a wavetable in each of A/B/C, including while holding notes at different velocities. Verify a fresh table, working position morphing and unchanged other-oscillator settings, semitone/fine tuning, levels, routes and held-note velocities. Reset/import a patch or change mode/table during generation; confirm a stale result cannot overwrite the new choice.
 4. Test oscillator octave −4/+4 bounds, disabled limit buttons, changes by exactly one octave and independence from other oscillators, semitone/fine tuning and keyboard octave.
