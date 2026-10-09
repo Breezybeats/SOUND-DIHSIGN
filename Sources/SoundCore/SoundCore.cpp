@@ -27,12 +27,12 @@ float sine(double phase) { return static_cast<float>(std::sin(2.0 * kPi * phase)
 
 struct Range { float low, high; bool logarithmic; };
 bool validParameter(int id) {
-    return (id >= 0 && id < 96 && id % 32 <= SD_OSC_DENSITY) ||
+    return (id >= 0 && id < 96 && id % 32 <= SD_OSC_OCTAVE) ||
            (id >= SD_CUTOFF && id <= SD_MACRO1);
 }
 bool continuousParameter(int id) {
     return validParameter(id) && !(id < 96 && (id % 32 == SD_OSC_MODE ||
-        id % 32 == SD_OSC_TABLE || id % 32 == SD_OSC_UNISON));
+        id % 32 == SD_OSC_TABLE || id % 32 == SD_OSC_UNISON || id % 32 == SD_OSC_OCTAVE));
 }
 Range parameterRange(int id) {
     if (id < 96) {
@@ -40,6 +40,7 @@ Range parameterRange(int id) {
             case SD_OSC_MODE: return {0, 3, false};
             case SD_OSC_TABLE: return {0, 2, false};
             case SD_OSC_SEMITONES: return {-24, 24, false};
+            case SD_OSC_OCTAVE: return {-4, 4, false};
             case SD_OSC_FINE: return {-100, 100, false};
             case SD_OSC_UNISON: return {1, 4, false};
             case SD_OSC_GRAIN_SIZE: return {.01f, .25f, true};
@@ -444,7 +445,8 @@ struct SD_Engine {
         const float detune = parameter(base, offset, b + SD_OSC_DETUNE);
         const float scan = parameter(base, offset, b + SD_OSC_SCAN);
         const double frequency = 440 * std::pow(2.0,
-            (voice.note - 69 + parameter(base, offset, b + SD_OSC_SEMITONES) +
+            (voice.note - 69 + base[b + SD_OSC_OCTAVE] * 12 +
+             parameter(base, offset, b + SD_OSC_SEMITONES) +
              parameter(base, offset, b + SD_OSC_FINE) / 100.0) / 12.0);
         auto &state = voice.oscillators[o];
         const auto &sample = samples[o];
@@ -684,6 +686,83 @@ int sd_load_wavetable(SD_Engine *engine, int oscillator, const float *samples,
             }
         }
         engine->importedTables[oscillator] = std::move(table);
+        return 1;
+    } catch (...) { return 0; }
+}
+
+int sd_generate_wavetable(float *output, int sample_count, int frame_size,
+                          unsigned int seed) {
+    // Validate before arithmetic or writes, including adversarial signed counts.
+    if (!output || frame_size < 32 || frame_size > 2048 ||
+        (frame_size & (frame_size - 1)) || sample_count <= 0 ||
+        sample_count % frame_size) return 0;
+    const int frames = sample_count / frame_size;
+    if (frames < 2 || frames > 256) return 0;
+    try {
+        constexpr int anchors = 5, maxHarmonics = 32;
+        const int harmonics = std::min(maxHarmonics, frame_size / 2 - 1);
+        uint32_t random = seed ? static_cast<uint32_t>(seed) : 0x9e3779b9u;
+        std::array<double, maxHarmonics> phases{}, detail{};
+        for (int h = 1; h <= harmonics; ++h) {
+            // A common phase per partial preserves shape when POSITION morphs.
+            phases[h - 1] = h == 1 ? 0 : (randomUnit(random) - .5) * .24;
+            detail[h - 1] = .7 + .6 * randomUnit(random);
+        }
+        std::array<std::array<double, maxHarmonics>, anchors> spectra{};
+        for (auto &spectrum : spectra) {
+            const double tilt = .85 + .9 * randomUnit(random);
+            const double odd = .4 + .65 * randomUnit(random);
+            const double even = .08 + .85 * randomUnit(random);
+            const double center = 2 + (harmonics - 2) * randomUnit(random);
+            const double secondCenter = 2 + (harmonics - 2) * randomUnit(random);
+            const double width = 1 + 2.5 * randomUnit(random);
+            const double formant = .45 + .8 * randomUnit(random);
+            const double secondFormant = .1 + .4 * randomUnit(random);
+            spectrum[0] = .9 + .3 * randomUnit(random);
+            for (int h = 2; h <= harmonics; ++h) {
+                const double d = (h - center) / width;
+                const double d2 = (h - secondCenter) / (width * 1.4);
+                spectrum[h - 1] = detail[h - 1] * (
+                    (h % 2 ? odd : even) / std::pow(h, tilt) +
+                    (formant * std::exp(-.5 * d * d) +
+                     secondFormant * std::exp(-.5 * d2 * d2)) / std::sqrt(h));
+            }
+        }
+        // Precompute cycles once so larger banks do not repeat trigonometry.
+        std::vector<std::array<double, maxHarmonics>> cycles(frame_size);
+        for (int i = 0; i < frame_size; ++i)
+            for (int h = 1; h <= harmonics; ++h)
+                cycles[i][h - 1] = std::sin(2 * kPi *
+                    (static_cast<double>(i) * h / frame_size + phases[h - 1]));
+        std::vector<float> bank(static_cast<size_t>(sample_count));
+        double peak = 0;
+        for (int frame = 0; frame < frames; ++frame) {
+            const double position = static_cast<double>(frame) * (anchors - 1) / (frames - 1);
+            const int a = std::min(static_cast<int>(position), anchors - 2);
+            const double fraction = position - a;
+            const double blend = fraction * fraction * (3 - 2 * fraction);
+            std::array<double, maxHarmonics> amplitudes{};
+            for (int h = 0; h < harmonics; ++h)
+                amplitudes[h] = spectra[a][h] + (spectra[a + 1][h] - spectra[a][h]) * blend;
+            double sum = 0;
+            for (int i = 0; i < frame_size; ++i) {
+                double value = 0;
+                for (int h = 0; h < harmonics; ++h) value += amplitudes[h] * cycles[i][h];
+                bank[frame * frame_size + i] = static_cast<float>(value);
+                sum += bank[frame * frame_size + i];
+            }
+            // Analytical sine cycles have no DC; remove float rounding residue.
+            const double mean = sum / frame_size;
+            for (int i = 0; i < frame_size; ++i) {
+                auto &value = bank[frame * frame_size + i];
+                value = static_cast<float>(value - mean);
+                peak = std::max(peak, std::abs(static_cast<double>(value)));
+            }
+        }
+        if (!std::isfinite(peak) || peak <= 0) return 0;
+        const double gain = .949999 / peak;
+        for (int i = 0; i < sample_count; ++i)
+            output[i] = static_cast<float>(bank[i] * gain);
         return 1;
     } catch (...) { return 0; }
 }

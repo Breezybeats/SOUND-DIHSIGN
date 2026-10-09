@@ -12,7 +12,7 @@ enum {
     SD_OSC_LEVEL = 3, SD_OSC_SEMITONES = 4, SD_OSC_FINE = 5,
     SD_OSC_UNISON = 6, SD_OSC_DETUNE = 7, SD_OSC_PAN = 8,
     SD_OSC_WARP = 9, SD_OSC_SCAN = 10, SD_OSC_GRAIN_SIZE = 11,
-    SD_OSC_DENSITY = 12,
+    SD_OSC_DENSITY = 12, SD_OSC_OCTAVE = 13,
     SD_CUTOFF = 128, SD_RESONANCE = 129, SD_DRIVE = 130,
     SD_DELAY = 131, SD_LFO_RATE = 132, SD_MASTER = 133,
     SD_ATTACK = 134, SD_DECAY = 135, SD_SUSTAIN = 136,
@@ -32,7 +32,8 @@ enum {
 
 /* Three oscillators: parameter ID = oscillator * 32 + SD_OSC_*.
  * Controls are 0..1 unless specified here: MODE 0..3, TABLE 0..2,
- * SEMITONES -24..24, FINE -100..100 cents, UNISON 1..4,
+ * SEMITONES -24..24, OCTAVE -4..4 integer (independent of SEMITONES),
+ * FINE -100..100 cents, UNISON 1..4,
  * CUTOFF 20..20000 Hz, LFO_RATE .05..20 Hz,
  * ATTACK/DECAY/RELEASE .001..5 seconds, GRAIN_SIZE .01.. .25 seconds,
  * DENSITY 1..60 grains/second. PAN 0=left, .5=center, 1=right.
@@ -52,7 +53,7 @@ void sd_all_notes_off(SD_Engine *engine);
 
 /* 16 slots. amount -1..1 spans the destination's normalized range.
  * LFO1 is bipolar; ENV1, velocity and MACRO1 are unipolar.
- * All continuous controls can be destinations; MODE/TABLE/UNISON cannot.
+ * All continuous controls can be destinations; MODE/TABLE/UNISON/OCTAVE cannot.
  * Frequency and time destination ranges use logarithmic normalization.
  * Macro destinations are resolved once before macro sources, without recursion.
  */
@@ -80,6 +81,19 @@ int sd_load_sample(SD_Engine *engine, int oscillator, const float *mono,
  */
 int sd_load_wavetable(SD_Engine *engine, int oscillator, const float *samples,
                       int sample_count, int frame_size);
+
+/* Offline original wavetable generation; no engine is required. Caller owns
+ * sample_count writable floats. frame_size must be a power of two, 32..2048;
+ * sample_count must contain 2..256 complete frames. Additive bass/formant
+ * spectra morph smoothly across frames with fixed harmonic phases, zero DC,
+ * and one shared peak normalization <= .95. Harmonics stay below Nyquist.
+ * xorshift32 uses shifts 13/17/5; seed 0 maps to 0x9e3779b9. Repeating a seed
+ * and dimensions repeats the generated bank. Run off the audio/UI thread.
+ * Returns 1 on success; invalid input/allocation failure returns 0 without
+ * changing output. Load a successful bank with sd_load_wavetable while stopped.
+ */
+int sd_generate_wavetable(float *output, int sample_count, int frame_size,
+                          unsigned int seed);
 
 #ifdef __cplusplus
 }

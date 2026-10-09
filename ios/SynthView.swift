@@ -2,26 +2,34 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 private enum SynthPalette {
-    static let background = Color(red: 0.035, green: 0.052, blue: 0.085)
-    static let panel = Color(red: 0.067, green: 0.090, blue: 0.135)
-    static let raised = Color(red: 0.105, green: 0.133, blue: 0.185)
-    static let line = Color(red: 0.18, green: 0.22, blue: 0.29)
-    static let text = Color(red: 0.92, green: 0.95, blue: 0.98)
-    static let muted = Color(red: 0.54, green: 0.62, blue: 0.72)
-    static let mint = Color(red: 0.35, green: 0.94, blue: 0.78)
-    static let violet = Color(red: 0.66, green: 0.54, blue: 1)
-    static let gold = Color(red: 1, green: 0.75, blue: 0.39)
+    static let background = Color.white
+    static let panel = Color(red: 0.965, green: 0.97, blue: 0.98)
+    static let raised = Color.white
+    static let line = Color(red: 0.85, green: 0.87, blue: 0.9)
+    static let text = Color(red: 0.1, green: 0.12, blue: 0.16)
+    static let muted = Color(red: 0.37, green: 0.40, blue: 0.45)
+    static let mint = Color(red: 0.0, green: 0.36, blue: 0.88)
+    static let violet = mint
+    static let gold = mint
 }
 
 @MainActor
 struct SynthView: View {
     @ObservedObject var model: SynthModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingReset = false
+    @State private var showingAdvanced = false
+    @State private var showingModulation = false
 
     private var oscillatorBase: Int { model.selectedOscillator * 32 }
     private var oscillatorMode: Int { Int(model.value(oscillatorBase)) }
-    private var sourceName: String { sourceTitle(model.selectedSource) }
-    private var customWavetableLoaded: Bool { model.patch.wavetables.contains { $0.oscillator == model.selectedOscillator } }
+    private var customWavetable: WavetableAsset? { model.patch.wavetables.first { $0.oscillator == model.selectedOscillator } }
+    private var customWavetableLoaded: Bool { customWavetable != nil }
+    private var transitionAnimation: Animation? { reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.88) }
+    private var tableTitle: String {
+        if customWavetableLoaded { return model.generatedWavetableNames[model.selectedOscillator] ?? "Custom wavetable" }
+        return ["Basic", "Growl", "Hollow"][min(2, max(0, Int(model.value(oscillatorBase + 1))))]
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -29,8 +37,7 @@ struct SynthView: View {
                 header
                 pageTabs
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        patchTitle
+                    VStack(alignment: .leading, spacing: 20) {
                         switch model.selectedPage {
                         case .oscillator: oscillatorPage
                         case .filter: filterPage
@@ -38,22 +45,40 @@ struct SynthView: View {
                         case .effects: effectsPage
                         case .modulation: modulationPage
                         }
-                        modulationSources
+                        if model.selectedPage != .modulation {
+                            DisclosureGroup("Modulation", isExpanded: $showingModulation) {
+                                modulationSources.padding(.top, 12)
+                            }
+                            .font(.subheadline.weight(.medium))
+                            .tint(SynthPalette.mint)
+                            .padding(.vertical, 8)
+                        }
                         if !model.status.isEmpty {
                             Text(model.status)
                                 .font(.caption)
                                 .foregroundStyle(SynthPalette.muted)
                                 .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityLabel("Status: \(model.status)")
                         }
                     }
-                    .padding(16)
+                    .frame(maxWidth: 720)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
+                    .animation(transitionAnimation, value: model.selectedPage)
+                    .animation(transitionAnimation, value: model.selectedOscillator)
+                    .animation(transitionAnimation, value: showingAdvanced)
+                    .animation(transitionAnimation, value: showingModulation)
                 }
-                keyboard(height: geometry.size.height < 500 ? 82 : 114)
+                .scrollDismissesKeyboard(.interactively)
+                keyboard(height: geometry.size.height < 500 ? 72 : 108)
             }
             .background(SynthPalette.background)
             .foregroundStyle(SynthPalette.text)
         }
-        .preferredColorScheme(.dark)
+        .tint(SynthPalette.mint)
+        .preferredColorScheme(.light)
         .confirmationDialog("Create a new patch?", isPresented: $confirmingReset, titleVisibility: .visible) {
             Button("Create new patch", role: .destructive) { model.resetPatch() }
         } message: {
@@ -63,172 +88,127 @@ struct SynthView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 3) {
-                    Text("SOUND").foregroundStyle(SynthPalette.text)
-                    Text("/").foregroundStyle(SynthPalette.mint)
-                    Text("DIHSIGN").foregroundStyle(SynthPalette.text)
-                }
-                .font(.system(size: 16, weight: .black, design: .rounded))
-                .tracking(1.3)
-                HStack(spacing: 5) {
-                    Circle().fill(model.audioReady ? SynthPalette.mint : SynthPalette.muted).frame(width: 5, height: 5)
-                    Text(model.audioReady ? "ORIGINAL ENGINE · LIVE" : "ORIGINAL ENGINE · AUDIO OFF")
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(SynthPalette.muted)
-                }
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Sound Dihsign")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(SynthPalette.muted)
+                TextField("Patch name", text: $model.patch.name)
+                    .font(.system(.title2, design: .rounded).weight(.semibold))
+                    .submitLabel(.done)
+                    .accessibilityLabel("Patch name")
             }
             Spacer(minLength: 0)
             Button {
                 if model.audioReady { model.stopAudio() } else { model.startAudio() }
             } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 17, weight: .semibold))
+                Image(systemName: model.audioReady ? "speaker.wave.2.fill" : "speaker.slash")
+                    .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(model.audioReady ? SynthPalette.mint : SynthPalette.muted)
-                    .frame(width: 42, height: 42)
-                    .background(SynthPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                    .frame(width: 44, height: 44)
+                    .background(SynthPalette.panel, in: Circle())
             }
             .accessibilityLabel(model.audioReady ? "Stop audio" : "Start audio")
             Menu {
                 Button("New patch", systemImage: "plus") { confirmingReset = true }
-                Button("Import SOUND/DIHSIGN patch", systemImage: "square.and.arrow.down") { model.isImportingPatch = true }
-                Button("Export SOUND/DIHSIGN patch", systemImage: "square.and.arrow.up") { model.isExportingPatch = true }
+                Button("Import patch", systemImage: "square.and.arrow.down") { model.isImportingPatch = true }
+                Button("Export patch", systemImage: "square.and.arrow.up") { model.isExportingPatch = true }
                 Button("Release all notes", systemImage: "hand.raised") { model.allNotesOff() }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 19, weight: .semibold))
-                    .frame(width: 42, height: 42)
-                    .background(SynthPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .background(SynthPalette.panel, in: Circle())
             }
             .accessibilityLabel("Patch actions")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 13)
+        .padding(.horizontal, 20)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
     }
 
     private var pageTabs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                ForEach(SynthPage.allCases, id: \.self) { page in
-                    Button { model.selectedPage = page } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: pageIcon(page)).font(.system(size: 11, weight: .semibold))
-                            Text(pageTitle(page)).font(.system(size: 11, weight: .bold))
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 11)
-                        .foregroundStyle(model.selectedPage == page ? SynthPalette.background : SynthPalette.muted)
-                        .background(model.selectedPage == page ? SynthPalette.mint : Color.clear, in: RoundedRectangle(cornerRadius: 9))
-                    }
-                    .accessibilityAddTraits(model.selectedPage == page ? .isSelected : [])
-                }
+        Picker("Sound controls", selection: $model.selectedPage) {
+            ForEach(SynthPage.allCases, id: \.self) { page in
+                Text(pageTitle(page)).tag(page)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 10)
         }
-        .background(SynthPalette.background)
-        .overlay(alignment: .bottom) { Rectangle().fill(SynthPalette.line.opacity(0.6)).frame(height: 1) }
-    }
-
-    private var patchTitle: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("CURRENT PATCH")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .tracking(1.8)
-                    .foregroundStyle(SynthPalette.muted)
-                TextField("Patch name", text: $model.patch.name)
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                    .submitLabel(.done)
-                    .accessibilityLabel("Patch name")
-            }
-            Spacer(minLength: 0)
-            Button { model.isExportingPatch = true } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SynthPalette.mint)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(SynthPalette.mint.opacity(0.10), in: Capsule())
-                    .overlay(Capsule().stroke(SynthPalette.mint.opacity(0.24)))
-            }
-            .accessibilityHint("Exports the app's native patch format")
-        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 20)
+        .frame(minHeight: 44)
     }
 
     private var oscillatorPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 18) {
+            Picker("Oscillator", selection: $model.selectedOscillator) {
                 ForEach(0..<3, id: \.self) { index in
-                    Button { model.selectedOscillator = index } label: {
-                        HStack(spacing: 7) {
-                            Circle().fill(model.selectedOscillator == index ? SynthPalette.mint : SynthPalette.muted).frame(width: 5, height: 5)
-                            Text("OSC \(["A", "B", "C"][index])")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        }
-                        .foregroundStyle(model.selectedOscillator == index ? SynthPalette.text : SynthPalette.muted)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                        .background(model.selectedOscillator == index ? SynthPalette.raised : SynthPalette.panel, in: RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(model.selectedOscillator == index ? SynthPalette.mint.opacity(0.55) : SynthPalette.line.opacity(0.5)))
-                    }
-                    .accessibilityAddTraits(model.selectedOscillator == index ? .isSelected : [])
+                    Text("Oscillator \(["A", "B", "C"][index])").tag(index)
                 }
             }
+            .pickerStyle(.segmented)
+            .frame(minHeight: 44)
             VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    sectionLabel("OSCILLATOR ENGINE", icon: "waveform")
-                    Spacer()
-                    Text(["WAVETABLE", "SAMPLE", "GRANULAR", "SPECTRAL"][min(3, max(0, oscillatorMode))])
-                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(SynthPalette.mint)
-                }
-                Picker("Oscillator engine", selection: Binding(get: { oscillatorMode }, set: { model.set(oscillatorBase, Float($0)) })) {
-                    Text("Wave").tag(0)
-                    Text("Sample").tag(1)
-                    Text("Grain").tag(2)
-                    Text("Spectral").tag(3)
-                }
-                .pickerStyle(.segmented)
-                .tint(SynthPalette.mint)
                 if oscillatorMode == 0 {
                     wavetableSelector
-                    SynthWaveform(table: Int(model.value(oscillatorBase + 1)), position: model.value(oscillatorBase + 2), warp: model.value(oscillatorBase + 9), customTable: model.patch.wavetables.first { $0.oscillator == model.selectedOscillator })
-                        .frame(height: 96)
-                        .background(SynthPalette.background, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(alignment: .bottomTrailing) {
-                            Text("SHAPE PREVIEW")
-                                .font(.system(size: 7, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(SynthPalette.muted)
-                                .padding(8)
-                        }
-                        .accessibilityLabel("Wavetable shape preview")
+                    waveform
                 } else {
                     samplePanel
+                    if oscillatorMode == 3 && customWavetableLoaded { waveform }
                 }
-                knobGrid(oscillatorControls, tint: SynthPalette.mint)
+                generateButton
+                octaveControls
+                HStack(alignment: .top, spacing: 20) {
+                    SynthParameter(model: model, id: oscillatorBase + 3, title: "Level")
+                    SynthParameter(model: model, id: oscillatorBase + 2, title: positionTitle)
+                }
             }
             .synthPanel()
-            HStack(spacing: 16) {
-                SynthKnob(model: model, id: 138, title: "Sub", tint: SynthPalette.gold)
-                SynthKnob(model: model, id: 139, title: "Noise", tint: SynthPalette.gold)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("THE FOUNDATION").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(SynthPalette.gold)
-                    Text("Add a clean sub or a little noise texture beneath your oscillators.")
-                        .font(.caption)
-                        .foregroundStyle(SynthPalette.muted)
+            DisclosureGroup("Advanced", isExpanded: $showingAdvanced) {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Oscillator mode").font(.subheadline.weight(.medium))
+                        Picker("Oscillator mode", selection: Binding(get: { oscillatorMode }, set: { model.set(oscillatorBase, Float($0)) })) {
+                            Text("Wave").tag(0)
+                            Text("Sample").tag(1)
+                            Text("Grain").tag(2)
+                            Text("Spectral").tag(3)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(minHeight: 44)
+                    }
+                    parameterGrid(advancedOscillatorControls)
+                    if oscillatorMode == 0 {
+                        Button {
+                            model.wavetableImportOscillator = model.selectedOscillator
+                            model.isImportingWavetable = true
+                        } label: {
+                            Label("Import wavetable", systemImage: "square.and.arrow.down")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        Text("Mono WAV, 2,048 samples per frame, up to 256 frames.")
+                            .font(.caption).foregroundStyle(SynthPalette.muted)
+                    }
+                    Divider()
+                    Text("Layers").font(.subheadline.weight(.medium))
+                    parameterGrid([.init(id: 138, title: "Sub"), .init(id: 139, title: "Noise")])
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 18)
             }
-            .synthPanel()
+            .font(.subheadline.weight(.medium))
+            .padding(.vertical, 8)
         }
     }
 
+    private var waveform: some View {
+        SynthWaveform(table: Int(model.value(oscillatorBase + 1)), position: model.value(oscillatorBase + 2), warp: model.value(oscillatorBase + 9), customTable: customWavetable)
+            .frame(height: 104)
+            .padding(.horizontal, 8)
+            .background(Color.white.opacity(0.85), in: RoundedRectangle(cornerRadius: 18))
+            .accessibilityLabel("Wavetable shape preview")
+    }
+
     private var wavetableSelector: some View {
-        VStack(alignment: .leading, spacing: 9) {
-          Menu {
+        Menu {
             ForEach(Array(["Basic", "Growl", "Hollow"].enumerated()), id: \.offset) { index, title in
                 Button { model.selectTable(index, oscillator: model.selectedOscillator) } label: {
                     if !customWavetableLoaded && Int(model.value(oscillatorBase + 1)) == index {
@@ -236,336 +216,321 @@ struct SynthView: View {
                     } else { Text(title) }
                 }
             }
-        } label: {
-            HStack {
-                Image(systemName: "square.stack.3d.up").foregroundStyle(SynthPalette.mint)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(customWavetableLoaded ? "Custom imported table" : ["Basic", "Growl", "Hollow"][min(2, max(0, Int(model.value(oscillatorBase + 1))))])
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(customWavetableLoaded ? "Embedded in your patch" : "Built-in original wavetable").font(.system(size: 10)).foregroundStyle(SynthPalette.muted)
-                }
-                Spacer()
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(SynthPalette.muted)
+            Divider()
+            Button("Import wavetable", systemImage: "square.and.arrow.down") {
+                model.wavetableImportOscillator = model.selectedOscillator
+                model.isImportingWavetable = true
             }
-            .padding(12)
-            .background(SynthPalette.raised.opacity(0.75), in: RoundedRectangle(cornerRadius: 9))
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(tableTitle).font(.system(.headline, design: .rounded))
+                    Text(customWavetableLoaded ? "Your wavetable" : "Wavetable")
+                        .font(.caption).foregroundStyle(SynthPalette.muted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold)).foregroundStyle(SynthPalette.muted)
+            }
+            .frame(minHeight: 44)
+            .foregroundStyle(SynthPalette.text)
+            .contentShape(Rectangle())
         }
-          .accessibilityLabel("Choose wavetable")
-          Button {
-              model.wavetableImportOscillator = model.selectedOscillator
-              model.isImportingWavetable = true
-          } label: {
-              Label("Import table WAV", systemImage: "square.and.arrow.down")
-                  .font(.system(size: 11, weight: .semibold))
-                  .foregroundStyle(SynthPalette.mint)
-          }
-          Text("Mono WAV · 2,048 samples per frame · up to 256 frames")
-              .font(.system(size: 9))
-              .foregroundStyle(SynthPalette.muted)
+        .accessibilityLabel("Choose wavetable. Current table: \(tableTitle)")
+    }
+
+    private var generateButton: some View {
+        let generatingThisOscillator = model.generatingOscillator == model.selectedOscillator
+        return Button {
+            model.generateWavetable(for: model.selectedOscillator)
+        } label: {
+            HStack(spacing: 8) {
+                if generatingThisOscillator {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "wand.and.stars")
+                }
+                Text(generatingThisOscillator ? "Generating…" : "Generate Wavetable")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .foregroundStyle(.white)
+            .background(SynthPalette.mint, in: Capsule())
+            .opacity(model.generatingOscillator != nil && !generatingThisOscillator ? 0.55 : 1)
+        }
+        .buttonStyle(FluidPressStyle())
+        .disabled(model.generatingOscillator != nil)
+        .accessibilityLabel(generatingThisOscillator ? "Generating wavetable" : "Generate a random wavetable for oscillator \(["A", "B", "C"][model.selectedOscillator])")
+        .accessibilityHint("Creates a new playable wavetable and selects wavetable mode")
+    }
+
+    private var octaveControls: some View {
+        let octave = Int(model.value(oscillatorBase + 13))
+        return HStack(spacing: 12) {
+            Text("Octave").font(.subheadline.weight(.medium))
+            Spacer()
+            Button { model.transposeOctave(for: model.selectedOscillator, by: -1) } label: {
+                Image(systemName: "minus")
+                    .font(.body.weight(.medium))
+                    .frame(width: 44, height: 44)
+                    .background(.white, in: Circle())
+            }
+            .buttonStyle(FluidPressStyle())
+            .disabled(octave <= -4)
+            .accessibilityLabel("Lower oscillator \(["A", "B", "C"][model.selectedOscillator]) one octave")
+            VStack(spacing: 2) {
+                Text(octave > 0 ? "+\(octave)" : "\(octave)")
+                    .font(.system(.title3, design: .rounded).weight(.semibold))
+                    .monospacedDigit()
+            }
+            .frame(minWidth: 42)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Oscillator tuning")
+            .accessibilityValue("\(octave) octaves")
+            Button { model.transposeOctave(for: model.selectedOscillator, by: 1) } label: {
+                Image(systemName: "plus")
+                    .font(.body.weight(.medium))
+                    .frame(width: 44, height: 44)
+                    .background(.white, in: Circle())
+            }
+            .buttonStyle(FluidPressStyle())
+            .disabled(octave >= 4)
+            .accessibilityLabel("Raise oscillator \(["A", "B", "C"][model.selectedOscillator]) one octave")
+        }
+    }
+
+    private var positionTitle: String {
+        switch oscillatorMode {
+        case 1: return "Start"
+        case 3: return "Shape"
+        default: return "Position"
         }
     }
 
     private var samplePanel: some View {
         let loaded = model.patch.samples.contains { $0.oscillator == model.selectedOscillator }
         let usingTable = oscillatorMode == 3 && customWavetableLoaded
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: oscillatorMode == 2 ? "sparkles" : "waveform.path")
-                    .font(.system(size: 22))
-                    .foregroundStyle(SynthPalette.violet)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(usingTable ? "Imported table harmonics" : loaded ? "Audio loaded" : "Bring your own texture")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(usingTable ? "Additive resynthesis of the custom table." : sampleExplanation)
-                        .font(.system(size: 11))
-                        .foregroundStyle(SynthPalette.muted)
-                }
-                Spacer(minLength: 0)
-            }
+        return VStack(alignment: .leading, spacing: 12) {
+            Label(usingTable ? "Wavetable harmonics" : loaded ? "Audio loaded" : "Add a texture", systemImage: oscillatorMode == 2 ? "sparkles" : "waveform")
+                .font(.headline)
+            Text(usingTable ? "Explore your table as harmonics." : sampleExplanation)
+                .font(.subheadline).foregroundStyle(SynthPalette.muted)
             Button {
                 model.sampleImportOscillator = model.selectedOscillator
                 model.isImportingSample = true
             } label: {
-                Label(usingTable ? "Use imported audio instead" : loaded ? "Replace audio" : "Import audio", systemImage: "square.and.arrow.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .foregroundStyle(SynthPalette.violet)
-                    .background(SynthPalette.violet.opacity(0.13), in: RoundedRectangle(cornerRadius: 9))
+                Label(usingTable ? "Use audio instead" : loaded ? "Replace audio" : "Import audio", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }
         }
-        .padding(12)
-        .background(SynthPalette.background, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var sampleExplanation: String {
         switch oscillatorMode {
-        case 1: return "Play an imported one-shot across the keyboard."
-        case 2: return "Turn imported audio into overlapping grains."
-        default: return "Additive harmonic resynthesis of imported audio."
+        case 1: return "Play an audio one-shot across the keyboard."
+        case 2: return "Explore your audio as overlapping grains."
+        default: return "Explore the harmonics inside your audio."
         }
     }
 
-    private var oscillatorControls: [KnobSpec] {
+    private var advancedOscillatorControls: [ParameterSpec] {
         let base = oscillatorBase
-        var controls = [KnobSpec(id: base + 3, title: "Level"), KnobSpec(id: base + 4, title: "Semi"), KnobSpec(id: base + 5, title: "Fine"), KnobSpec(id: base + 8, title: "Pan")]
-        switch oscillatorMode {
-        case 0:
-            controls += [KnobSpec(id: base + 2, title: "Position"), KnobSpec(id: base + 9, title: "Warp"), KnobSpec(id: base + 6, title: "Unison"), KnobSpec(id: base + 7, title: "Detune")]
-        case 1:
-            controls += [KnobSpec(id: base + 2, title: "Start"), KnobSpec(id: base + 9, title: "Warp"), KnobSpec(id: base + 6, title: "Unison"), KnobSpec(id: base + 7, title: "Detune")]
-        case 2:
-            controls += [KnobSpec(id: base + 2, title: "Position"), KnobSpec(id: base + 10, title: "Scan"), KnobSpec(id: base + 11, title: "Size"), KnobSpec(id: base + 12, title: "Density"), KnobSpec(id: base + 9, title: "Warp"), KnobSpec(id: base + 6, title: "Unison"), KnobSpec(id: base + 7, title: "Detune")]
-        default:
-            controls += [KnobSpec(id: base + 2, title: "Shape"), KnobSpec(id: base + 9, title: "Warp"), KnobSpec(id: base + 6, title: "Unison"), KnobSpec(id: base + 7, title: "Detune")]
+        var controls: [ParameterSpec] = [.init(id: base + 4, title: "Semitones"), .init(id: base + 5, title: "Fine tune"), .init(id: base + 8, title: "Pan"), .init(id: base + 9, title: "Warp"), .init(id: base + 6, title: "Unison"), .init(id: base + 7, title: "Detune")]
+        if oscillatorMode == 2 {
+            controls += [.init(id: base + 10, title: "Scan"), .init(id: base + 11, title: "Grain size"), .init(id: base + 12, title: "Density")]
         }
         return controls
     }
 
     private var filterPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            sectionLabel("FILTER", icon: "line.3.horizontal.decrease")
-            Text("Shape the space around your sound.")
-                .font(.system(size: 19, weight: .bold, design: .rounded))
-            Text("A resonant low-pass filter after the oscillator mix.")
-                .font(.caption).foregroundStyle(SynthPalette.muted)
+        VStack(alignment: .leading, spacing: 20) {
+            sectionTitle("Filter", subtitle: "Shape the space around your sound.")
             SynthFilterPlot(cutoff: model.value(128), resonance: model.value(129))
-                .frame(height: 128)
-                .background(SynthPalette.background, in: RoundedRectangle(cornerRadius: 10))
+                .frame(height: 136)
                 .accessibilityLabel("Low-pass response illustration")
-            HStack(spacing: 30) {
-                SynthKnob(model: model, id: 128, title: "Cutoff", tint: SynthPalette.mint, diameter: 76)
-                SynthKnob(model: model, id: 129, title: "Resonance", tint: SynthPalette.mint, diameter: 76)
-            }
-            .frame(maxWidth: .infinity)
-            Text("Try linking LFO 1 to Cutoff for movement.")
-                .font(.caption).foregroundStyle(SynthPalette.muted)
+            parameterGrid([.init(id: 128, title: "Cutoff"), .init(id: 129, title: "Resonance")])
         }
         .synthPanel()
     }
 
     private var envelopePage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            sectionLabel("ENV 1 · AMPLITUDE", icon: "chart.xyaxis.line")
+        VStack(alignment: .leading, spacing: 20) {
+            sectionTitle("Envelope", subtitle: "Give every note its own shape.")
             SynthEnvelopePlot(attack: model.value(134), decay: model.value(135), sustain: model.value(136), release: model.value(137))
-                .frame(height: 118)
-                .background(SynthPalette.background, in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityLabel("Attack decay sustain release envelope")
-            knobGrid([KnobSpec(id: 134, title: "Attack"), KnobSpec(id: 135, title: "Decay"), KnobSpec(id: 136, title: "Sustain"), KnobSpec(id: 137, title: "Release")], tint: SynthPalette.violet)
-            Divider().overlay(SynthPalette.line)
-            sectionLabel("LFO 1 · SINE", icon: "waveform.path")
-            HStack(spacing: 18) {
-                SynthKnob(model: model, id: 132, title: "Rate", tint: SynthPalette.violet, diameter: 68)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Make it move.").font(.system(size: 17, weight: .bold, design: .rounded))
-                    Text("Drag LFO 1 onto a knob, then open Routes to tune its modulation depth.")
-                        .font(.caption).foregroundStyle(SynthPalette.muted)
-                }
-            }
+                .frame(height: 128)
+                .accessibilityLabel("Attack, decay, sustain and release envelope")
+            parameterGrid([.init(id: 134, title: "Attack"), .init(id: 135, title: "Decay"), .init(id: 136, title: "Sustain"), .init(id: 137, title: "Release")])
+            Divider()
+            sectionTitle("LFO 1", subtitle: "A gentle sine wave for movement.")
+            SynthParameter(model: model, id: 132, title: "Rate")
         }
         .synthPanel()
     }
 
     private var effectsPage: some View {
         VStack(alignment: .leading, spacing: 16) {
-            effectCard(title: "DRIVE", subtitle: "Add saturation and harmonic weight.", icon: "bolt.fill", id: 130, color: SynthPalette.gold)
-            effectCard(title: "DELAY", subtitle: "Blend in echoes after the filter and drive.", icon: "repeat", id: 131, color: SynthPalette.violet)
-            Text("This engine currently includes drive and delay. More effects can be added as the engine develops.")
-                .font(.caption)
-                .foregroundStyle(SynthPalette.muted)
+            effectCard(title: "Drive", subtitle: "Add warmth and harmonic weight.", icon: "bolt", id: 130)
+            effectCard(title: "Delay", subtitle: "Give your sound a little more space.", icon: "repeat", id: 131)
         }
     }
 
-    private func effectCard(title: String, subtitle: String, icon: String, id: Int, color: Color) -> some View {
-        HStack(spacing: 20) {
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: icon).font(.system(size: 22)).foregroundStyle(color)
-                Text(title).font(.system(size: 12, weight: .bold, design: .monospaced)).tracking(1.5)
-                Text(subtitle).font(.caption).foregroundStyle(SynthPalette.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            SynthKnob(model: model, id: id, title: id == 130 ? "Amount" : "Mix", tint: color, diameter: 72)
+    private func effectCard(title: String, subtitle: String, icon: String, id: Int) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(title, systemImage: icon).font(.system(.title3, design: .rounded).weight(.semibold))
+            Text(subtitle).font(.subheadline).foregroundStyle(SynthPalette.muted)
+            SynthParameter(model: model, id: id, title: id == 130 ? "Amount" : "Mix")
         }
         .synthPanel()
     }
 
     private var modulationPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                sectionLabel("MODULATION ROUTES", icon: "point.3.connected.trianglepath.dotted")
-                Spacer()
-                Text("\(model.patch.routes.count)").font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundStyle(SynthPalette.violet)
-            }
+        VStack(alignment: .leading, spacing: 20) {
+            sectionTitle("Modulation", subtitle: "Connect a source. Make it move.")
+            modulationSources
             if model.patch.routes.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    Image(systemName: "arrow.up.right").font(.system(size: 24, weight: .light)).foregroundStyle(SynthPalette.violet)
-                    Text("Give your sound some motion.").font(.system(size: 18, weight: .bold, design: .rounded))
-                    Text("Choose a source below, then tap the link symbol on a knob. You can also drag a source directly onto a knob.")
-                        .font(.caption).foregroundStyle(SynthPalette.muted)
-                }
-                .padding(.vertical, 12)
+                Text("Drag a source onto any slider, or choose a source and tap the slider’s link button.")
+                    .font(.subheadline).foregroundStyle(SynthPalette.muted)
+                    .padding(.vertical, 12)
             } else {
                 ForEach(model.patch.routes, id: \.slot) { route in
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 7) {
-                            Text(sourceTitle(route.source)).foregroundStyle(SynthPalette.violet)
-                            Image(systemName: "arrow.right").foregroundStyle(SynthPalette.muted)
-                            Text(ParameterCatalog.name(route.destination))
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(sourceTitle(route.source)).font(.subheadline.weight(.medium))
+                                Text(ParameterCatalog.name(route.destination)).font(.caption).foregroundStyle(SynthPalette.muted)
+                            }
                             Spacer(minLength: 0)
                             Button { model.removeRoute(slot: route.slot) } label: {
-                                Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).padding(9)
-                                    .background(SynthPalette.background, in: Circle())
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(SynthPalette.muted)
+                                    .frame(width: 44, height: 44)
                             }
                             .accessibilityLabel("Remove \(sourceTitle(route.source)) to \(ParameterCatalog.name(route.destination)) route")
                         }
-                        .font(.system(size: 11, weight: .semibold))
-                        HStack(spacing: 10) {
+                        HStack(spacing: 12) {
                             Slider(value: Binding(get: { route.amount }, set: { model.setRouteAmount(slot: route.slot, amount: $0) }), in: -1...1)
-                                .tint(SynthPalette.violet)
-                                .accessibilityLabel("Modulation depth")
+                                .frame(minHeight: 44)
+                                .accessibilityLabel("\(sourceTitle(route.source)) to \(ParameterCatalog.name(route.destination)) depth")
                             Text(String(format: "%+.0f%%", route.amount * 100))
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(SynthPalette.muted)
-                                .frame(width: 45, alignment: .trailing)
+                                .font(.caption.monospacedDigit()).foregroundStyle(SynthPalette.muted)
+                                .frame(width: 48, alignment: .trailing)
                         }
                     }
-                    .padding(12)
-                    .background(SynthPalette.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+                    .synthPanel()
                 }
             }
-            Divider().overlay(SynthPalette.line)
-            HStack(spacing: 18) {
-                SynthKnob(model: model, id: 140, title: "Macro 1", tint: SynthPalette.gold, diameter: 68)
-                Text("Link Macro 1 to several destinations to shape your patch with one control.")
-                    .font(.caption).foregroundStyle(SynthPalette.muted)
-            }
+            SynthParameter(model: model, id: 140, title: "Macro 1").synthPanel()
         }
-        .synthPanel()
     }
 
     private var modulationSources: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                Text("MOD SOURCES").font(.system(size: 9, weight: .bold, design: .monospaced)).tracking(1.4)
-                Spacer()
+        VStack(alignment: .leading, spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(1...4, id: \.self) { source in
+                    Button { model.selectedSource = source } label: {
+                        Label(sourceTitle(source), systemImage: sourceIcon(source))
+                            .font(.subheadline.weight(.medium))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundStyle(model.selectedSource == source ? .white : SynthPalette.mint)
+                            .background(model.selectedSource == source ? SynthPalette.mint : SynthPalette.panel, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(FluidPressStyle())
+                    .onDrag { NSItemProvider(object: "sounddihsign:source:\(source)" as NSString) }
+                    .accessibilityAddTraits(model.selectedSource == source ? .isSelected : [])
+                    .accessibilityHint("Select, then tap a slider’s link button")
+                }
+            }
+            if model.selectedPage != .modulation {
                 Button { model.selectedPage = .modulation } label: {
-                    HStack(spacing: 4) {
-                        Text("Routes \(model.patch.routes.count)")
-                        Image(systemName: "arrow.up.right")
-                    }
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(SynthPalette.violet)
+                    Label("Routes · \(model.patch.routes.count)", systemImage: "arrow.up.right")
+                        .font(.subheadline)
+                        .frame(minHeight: 44)
                 }
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(1...4, id: \.self) { source in
-                        Button { model.selectedSource = source } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: sourceIcon(source))
-                                Text(sourceTitle(source))
-                            }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(model.selectedSource == source ? SynthPalette.background : SynthPalette.violet)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 10)
-                            .background(model.selectedSource == source ? SynthPalette.violet : SynthPalette.violet.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
-                        }
-                        .onDrag { NSItemProvider(object: "sounddihsign:source:\(source)" as NSString) }
-                        .accessibilityAddTraits(model.selectedSource == source ? .isSelected : [])
-                        .accessibilityHint("Select, then tap a knob's link button")
-                    }
-                }
-            }
-            Text("Drag to a knob, or select \(sourceName) and tap a knob’s link symbol.")
-                .font(.system(size: 10))
-                .foregroundStyle(SynthPalette.muted)
         }
-        .synthPanel()
     }
 
     private func keyboard(height: CGFloat) -> some View {
-        VStack(spacing: 9) {
-            HStack(spacing: 8) {
-                Image(systemName: "pianokeys").font(.system(size: 12)).foregroundStyle(SynthPalette.mint)
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
                 Button {
                     model.allNotesOff()
                     model.octave = max(0, model.octave - 1)
-                } label: { Image(systemName: "minus").font(.system(size: 10, weight: .bold)).frame(width: 28, height: 28).background(SynthPalette.raised, in: RoundedRectangle(cornerRadius: 7)) }
+                } label: {
+                    Image(systemName: "minus").frame(width: 44, height: 44)
+                }
                 .accessibilityLabel("Lower keyboard one octave")
                 .disabled(model.octave <= 0)
-                Text("OCT \(model.octave)").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundStyle(SynthPalette.muted)
+                Text("C\(model.octave)")
+                    .font(.caption.weight(.medium).monospacedDigit())
+                    .foregroundStyle(SynthPalette.muted)
+                    .frame(minWidth: 28)
                 Button {
                     model.allNotesOff()
                     model.octave = min(7, model.octave + 1)
-                } label: { Image(systemName: "plus").font(.system(size: 10, weight: .bold)).frame(width: 28, height: 28).background(SynthPalette.raised, in: RoundedRectangle(cornerRadius: 7)) }
+                } label: {
+                    Image(systemName: "plus").frame(width: 44, height: 44)
+                }
                 .accessibilityLabel("Raise keyboard one octave")
                 .disabled(model.octave >= 7)
-                Spacer(minLength: 0)
-                Image(systemName: "speaker.wave.2").font(.system(size: 11)).foregroundStyle(SynthPalette.muted)
+                Spacer(minLength: 8)
+                Image(systemName: "speaker.wave.2")
+                    .font(.caption).foregroundStyle(SynthPalette.muted)
+                    .accessibilityHidden(true)
                 Slider(value: Binding(get: { model.value(133) }, set: { model.set(133, $0) }), in: 0...1)
-                    .tint(SynthPalette.mint)
-                    .frame(width: 72)
-                    .accessibilityLabel("Master level")
+                    .frame(maxWidth: 110, minHeight: 44)
+                    .accessibilityLabel("Master volume")
+                Button { model.allNotesOff() } label: {
+                    Image(systemName: "hand.raised").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Release all notes")
             }
+            .font(.system(size: 14, weight: .medium))
             TouchKeyboard(baseNote: (model.octave + 1) * 12, onNoteOn: { note, velocity in model.noteOn(note, velocity: velocity) }, onNoteOff: { model.noteOff($0) })
                 .frame(height: height)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .padding(.horizontal, 12)
-        .padding(.top, 10)
         .padding(.bottom, 8)
-        .background(SynthPalette.background)
-        .overlay(alignment: .top) { Rectangle().fill(SynthPalette.line).frame(height: 1) }
+        .background(.white)
+        .overlay(alignment: .top) { Rectangle().fill(SynthPalette.line.opacity(0.6)).frame(height: 0.5) }
     }
 
-    private func knobGrid(_ controls: [KnobSpec], tint: Color) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 67), spacing: 12)], spacing: 17) {
-            ForEach(controls) { spec in SynthKnob(model: model, id: spec.id, title: spec.title, tint: tint) }
+    private func parameterGrid(_ controls: [ParameterSpec]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 136), spacing: 20)], spacing: 16) {
+            ForEach(controls) { spec in SynthParameter(model: model, id: spec.id, title: spec.title) }
         }
     }
 
-    private func sectionLabel(_ title: String, icon: String) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon).font(.system(size: 11)).foregroundStyle(SynthPalette.mint)
-            Text(title).font(.system(size: 10, weight: .bold, design: .monospaced)).tracking(1.3)
+    private func sectionTitle(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(.title2, design: .rounded).weight(.semibold))
+            Text(subtitle).font(.subheadline).foregroundStyle(SynthPalette.muted)
         }
     }
 
     private func pageTitle(_ page: SynthPage) -> String {
         switch page {
-        case .oscillator: return "Oscillators"
+        case .oscillator: return "Sound"
         case .filter: return "Filter"
-        case .envelopes: return "Motion"
+        case .envelopes: return "Shape"
         case .effects: return "FX"
-        case .modulation: return "Routes"
-        }
-    }
-
-    private func pageIcon(_ page: SynthPage) -> String {
-        switch page {
-        case .oscillator: return "waveform"
-        case .filter: return "line.3.horizontal.decrease"
-        case .envelopes: return "chart.xyaxis.line"
-        case .effects: return "sparkles"
-        case .modulation: return "point.3.connected.trianglepath.dotted"
+        case .modulation: return "Mod"
         }
     }
 }
 
-private struct KnobSpec: Identifiable {
+private struct ParameterSpec: Identifiable {
     let id: Int
     let title: String
 }
 
+/// Native sliders retain synth modulation and logarithmic response without visual clutter.
 @MainActor
-private struct SynthKnob: View {
+private struct SynthParameter: View {
     @ObservedObject var model: SynthModel
     let id: Int
     let title: String
-    let tint: Color
-    var diameter: CGFloat = 54
-    @State private var dragStart: Float?
     @State private var dropTarget = false
 
     private var range: ClosedRange<Float> { ParameterCatalog.descriptor(id)?.range ?? 0...1 }
@@ -581,74 +546,58 @@ private struct SynthKnob: View {
     }
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 4) {
-                Text(title).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                Text(title).font(.subheadline.weight(.medium)).lineLimit(1).minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
                 if !discrete {
-                  Button { model.route(source: model.selectedSource, destination: id) } label: {
-                    Image(systemName: "link")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(hasRoute ? SynthPalette.violet : SynthPalette.muted)
-                        .frame(width: 21, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Link \(sourceTitle(model.selectedSource)) to \(ParameterCatalog.name(id))")
-                }
-            }
-            ZStack {
-                Circle().trim(from: 0, to: 0.75).stroke(SynthPalette.line, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(135))
-                Circle().trim(from: 0, to: CGFloat(normalized) * 0.75).stroke(dropTarget ? SynthPalette.violet : tint, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(135))
-                Circle().fill(LinearGradient(colors: [SynthPalette.raised, SynthPalette.panel], startPoint: .topLeading, endPoint: .bottomTrailing)).padding(7)
-                Circle().stroke(SynthPalette.line.opacity(0.5), lineWidth: 1).padding(7)
-                Capsule().fill(SynthPalette.text).frame(width: 2, height: diameter * 0.19).offset(y: -diameter * 0.22).rotationEffect(.degrees(-135 + Double(normalized) * 270))
-                if hasRoute {
-                    Circle().fill(SynthPalette.violet).frame(width: 4, height: 4).offset(y: diameter * 0.38)
+                    Button { model.route(source: model.selectedSource, destination: id) } label: {
+                        Image(systemName: hasRoute ? "link.circle.fill" : "link")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(hasRoute ? SynthPalette.mint : SynthPalette.muted)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Link \(sourceTitle(model.selectedSource)) to \(ParameterCatalog.name(id))")
+                } else {
+                    Spacer().frame(height: 44)
                 }
             }
-            .frame(width: diameter, height: diameter)
-            .padding(3)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 1)
-                .onChanged { gesture in
-                    if dragStart == nil { dragStart = normalized }
-                    applyNormalized((dragStart ?? normalized) - Float(gesture.translation.height) / 160)
+            Slider(value: Binding(get: { normalized }, set: { applyNormalized($0) }), in: 0...1)
+                .frame(minHeight: 44)
+                .accessibilityLabel(ParameterCatalog.name(id))
+                .accessibilityValue(displayValue)
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: adjustAccessibility(up: true)
+                    case .decrement: adjustAccessibility(up: false)
+                    @unknown default: break
+                    }
                 }
-                .onEnded { _ in dragStart = nil })
-            .onDrop(of: [UTType.plainText], isTargeted: $dropTarget) { providers in
-                guard !discrete, let provider = providers.first else { return false }
-                _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-                    guard let token = object as? String, token.hasPrefix("sounddihsign:source:"),
-                          let source = Int(token.split(separator: ":").last ?? ""), (1...4).contains(source) else { return }
-                    DispatchQueue.main.async { model.route(source: source, destination: id) }
-                }
-                return true
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(ParameterCatalog.name(id))
-            .accessibilityValue(displayValue)
-            .accessibilityHint("Swipe up or down to adjust")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: adjustAccessibility(up: true)
-                case .decrement: adjustAccessibility(up: false)
-                @unknown default: break
-                }
-            }
-            .contextMenu {
-                if !discrete {
-                    Button("Link \(sourceTitle(model.selectedSource))", systemImage: "link") { model.route(source: model.selectedSource, destination: id) }
-                }
-                Button("Reset \(title)", systemImage: "arrow.counterclockwise") {
-                    if let descriptor = ParameterCatalog.descriptor(id) { model.set(id, descriptor.defaultValue) }
-                }
-            }
             Text(displayValue)
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(SynthPalette.muted)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, dropTarget ? 6 : 0)
+        .background(dropTarget ? SynthPalette.mint.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 12))
+        .onDrop(of: [UTType.plainText], isTargeted: $dropTarget) { providers in
+            guard !discrete, let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+                guard let token = object as? String, token.hasPrefix("sounddihsign:source:"),
+                      let source = Int(token.split(separator: ":").last ?? ""), (1...4).contains(source) else { return }
+                DispatchQueue.main.async { model.route(source: source, destination: id) }
+            }
+            return true
+        }
+        .contextMenu {
+            if !discrete {
+                Button("Link \(sourceTitle(model.selectedSource))", systemImage: "link") { model.route(source: model.selectedSource, destination: id) }
+            }
+            Button("Reset \(title)", systemImage: "arrow.counterclockwise") {
+                if let descriptor = ParameterCatalog.descriptor(id) { model.set(id, descriptor.defaultValue) }
+            }
+        }
     }
 
     private func applyNormalized(_ fraction: Float) {
@@ -677,7 +626,7 @@ private struct SynthKnob: View {
         }
         if id < 96 {
             switch id % 32 {
-            case 4: return String(format: "%+.0f st", value)
+            case 4: return String(format: "%+.1f st", value)
             case 5: return String(format: "%+.0f ct", value)
             case 6: return String(format: "%.0f voices", value)
             case 8:
@@ -688,6 +637,17 @@ private struct SynthKnob: View {
             }
         }
         return String(format: "%.0f%%", value * 100)
+    }
+}
+
+private struct FluidPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(reduceMotion ? 1 : configuration.isPressed ? 0.975 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.72), value: configuration.isPressed)
     }
 }
 
@@ -872,8 +832,7 @@ private func sourceIcon(_ source: Int) -> String {
 
 private extension View {
     func synthPanel() -> some View {
-        padding(15)
-            .background(SynthPalette.panel, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(SynthPalette.line.opacity(0.55)))
+        padding(18)
+            .background(SynthPalette.panel, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 }

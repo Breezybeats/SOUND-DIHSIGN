@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -50,6 +51,15 @@ double difference(const std::vector<float> &a, const std::vector<float> &b) {
         const double d = a[i] - b[i]; energy += d * d;
     }
     return std::sqrt(energy / std::max<size_t>(1, std::min(a.size(), b.size())));
+}
+std::complex<double> harmonic(const float *frame, int size, int bin) {
+    std::complex<double> value{};
+    for (int i = 0; i < size; ++i) {
+        const double angle = -2 * kPi * bin * i / size;
+        value += static_cast<double>(frame[i]) *
+            std::complex<double>(std::cos(angle), std::sin(angle));
+    }
+    return value * (2.0 / size);
 }
 bool finiteBounded(const Audio &audio) {
     for (const auto *channel : {&audio.left, &audio.right})
@@ -155,6 +165,33 @@ int main(int argc, char **argv) {
         a = render(e.get(), kRate);
         require(std::abs(pitch(a.left) - 880) < 2, "octave transpose failed");
         require(finiteBounded(a), "pitch render contains invalid samples");
+    });
+    test("each oscillator changes octave without overwriting semitones or fine tuning", [] {
+        for (int oscillator = 0; oscillator < 3; ++oscillator) {
+            auto e = engine();
+            const int base = oscillator * 32;
+            sd_set_parameter(e.get(), SD_OSC_LEVEL, 0);
+            sd_set_parameter(e.get(), base + SD_OSC_LEVEL, .7f);
+            sd_set_parameter(e.get(), base + SD_OSC_SEMITONES, 7);
+            sd_set_parameter(e.get(), base + SD_OSC_FINE, 25);
+            // Other lanes remain transposed independently, even while muted.
+            sd_set_parameter(e.get(), ((oscillator + 1) % 3) * 32 + SD_OSC_OCTAVE, -3);
+            sd_note_on(e.get(), 69, 1);
+            for (int octave : {-1, 1, 0}) {
+                sd_set_parameter(e.get(), base + SD_OSC_OCTAVE, static_cast<float>(octave));
+                const double expected = 440 * std::pow(2.0, (7.25 + octave * 12) / 12.0);
+                require(std::abs(pitch(render(e.get(), kRate).left) - expected) < 2,
+                        "octave shift changed other pitch settings or affected a different lane");
+            }
+            sd_set_parameter(e.get(), base + SD_OSC_OCTAVE, -.6f);
+            const double rounded = 440 * std::pow(2.0, (7.25 - 12) / 12.0);
+            require(std::abs(pitch(render(e.get(), kRate).left) - rounded) < 2,
+                    "fractional octave was not rounded to a discrete octave");
+            sd_set_parameter(e.get(), SD_MACRO1, 1);
+            sd_set_modulation(e.get(), 0, SD_SOURCE_MACRO1, base + SD_OSC_OCTAVE, 1);
+            require(std::abs(pitch(render(e.get(), kRate).left) - rounded) < 2,
+                    "discrete octave incorrectly accepted a modulation route");
+        }
     });
     test("ADSR release reaches silence", [] {
         auto e = engine(); sd_set_parameter(e.get(), SD_RELEASE, .08f);
@@ -267,6 +304,120 @@ int main(int argc, char **argv) {
         require(sd_load_wavetable(e.get(), 0, table.data(), 256, 127) == 0, "non-power-two frame accepted");
         require(sd_load_wavetable(e.get(), 0, table.data(), 256, 16) == 0, "too-short frame accepted");
         require(sd_load_wavetable(e.get(), 0, nullptr, 0, 0) == 1, "builtin restore failed");
+    });
+    test("generated wavetable repeatability, variation and output bounds", [] {
+        constexpr int size = 2048, frames = 16;
+        std::vector<float> a(size * frames), repeat(a.size()), other(a.size());
+        require(sd_generate_wavetable(a.data(), static_cast<int>(a.size()), size, 8472) == 1,
+                "normal generated wavetable failed");
+        require(sd_generate_wavetable(repeat.data(), static_cast<int>(repeat.size()), size, 8472) == 1,
+                "repeat generation failed");
+        require(a == repeat, "same seed did not repeat the generated bank");
+        require(sd_generate_wavetable(other.data(), static_cast<int>(other.size()), size, 91823) == 1,
+                "different seed generation failed");
+        require(difference(a, other) > .02, "different seeds did not create new timbre");
+        double peak = 0, largestMean = 0, smallestRMS = 1, lowestPeak = 1;
+        bool finite = true;
+        for (int frame = 0; frame < frames; ++frame) {
+            double sum = 0, energy = 0, framePeak = 0;
+            for (int i = 0; i < size; ++i) {
+                const double value = a[frame * size + i];
+                finite = finite && std::isfinite(value);
+                sum += value; energy += value * value;
+                framePeak = std::max(framePeak, std::abs(value));
+            }
+            peak = std::max(peak, framePeak); lowestPeak = std::min(lowestPeak, framePeak);
+            largestMean = std::max(largestMean, std::abs(sum / size));
+            smallestRMS = std::min(smallestRMS, std::sqrt(energy / size));
+        }
+        require(finite && peak <= .95 && peak > .94, "generated table is not finite and peak normalized");
+        require(smallestRMS > .05, "generated bank contains a silent frame");
+        require(largestMean < .0000001, "generated cycles contain DC offset");
+        require(peak - lowestPeak > .01, "generated frames were independently normalized");
+        const std::vector<float> first(a.begin(), a.begin() + size);
+        const std::vector<float> last(a.end() - size, a.end());
+        require(difference(first, last) > .02, "generated bank does not morph between frames");
+    });
+    test("generated wavetable dimension limits and invalid inputs", [] {
+        std::array<float, 64> data{}; data.fill(.123f);
+        const auto original = data;
+        require(sd_generate_wavetable(nullptr, 64, 32, 0) == 0, "null generation output accepted");
+        require(sd_generate_wavetable(data.data(), 0, 32, 0) == 0, "empty generation accepted");
+        require(sd_generate_wavetable(data.data(), -64, 32, 0) == 0, "negative generation count accepted");
+        require(sd_generate_wavetable(data.data(), 64, 0, 0) == 0, "zero generation frame size accepted");
+        require(sd_generate_wavetable(data.data(), 64, -32, 0) == 0, "negative generation frame size accepted");
+        require(sd_generate_wavetable(data.data(), 64, 31, 0) == 0, "invalid generation frame size accepted");
+        require(sd_generate_wavetable(data.data(), 64, 16, 0) == 0, "undersized generation frame accepted");
+        require(sd_generate_wavetable(data.data(), 8192, 4096, 0) == 0, "oversized generation frame accepted");
+        require(sd_generate_wavetable(data.data(), 63, 32, 0) == 0, "partial generation frame accepted");
+        require(sd_generate_wavetable(data.data(), 32, 32, 0) == 0, "one-frame generation accepted");
+        require(sd_generate_wavetable(data.data(), 32 * 257, 32, 0) == 0, "overlong generated bank accepted");
+        require(sd_generate_wavetable(data.data(), std::numeric_limits<int>::max(), 32, 0) == 0,
+                "extreme positive generation count accepted");
+        require(sd_generate_wavetable(data.data(), std::numeric_limits<int>::min(), 32, 0) == 0,
+                "extreme negative generation count accepted");
+        require(data == original, "invalid generation changed output");
+        require(sd_generate_wavetable(data.data(), 64, 32, 0) == 1, "minimum dimensions or zero seed rejected");
+        std::array<float, 64> mapped{};
+        require(sd_generate_wavetable(mapped.data(), 64, 32, 0x9e3779b9u) == 1 && data == mapped,
+                "zero seed mapping did not use documented xorshift state");
+        std::vector<float> maximum(2048 * 256);
+        require(sd_generate_wavetable(maximum.data(), static_cast<int>(maximum.size()), 2048,
+                                      std::numeric_limits<unsigned int>::max()) == 1,
+                "maximum valid generation dimensions rejected");
+        require(std::all_of(maximum.begin(), maximum.end(), [](float value) {
+            return std::isfinite(value) && std::abs(value) <= .95f;
+        }), "maximum generated bank has invalid samples");
+    });
+    test("generated wavetable harmonic phases and Nyquist limits", [] {
+        for (int size : {32, 2048}) {
+            std::vector<float> bank(size * 8);
+            require(sd_generate_wavetable(bank.data(), static_cast<int>(bank.size()), size, 61994) == 1,
+                    "spectral-check generation failed");
+            bool coherent = true, bandlimited = true;
+            double minimumFundamental = 1;
+            for (int frame = 0; frame < 8; ++frame) {
+                const float *cycle = bank.data() + frame * size;
+                minimumFundamental = std::min(minimumFundamental, std::abs(harmonic(cycle, size, 1)));
+                const int limit = std::min(32, size / 2 - 1);
+                for (int h = 1; h <= limit; ++h) {
+                    const auto reference = harmonic(bank.data(), size, h);
+                    const auto current = harmonic(cycle, size, h);
+                    const double scale = std::abs(reference) * std::abs(current);
+                    if (scale > .000001)
+                        coherent = coherent && std::abs((current * std::conj(reference)).imag()) / scale < .00001;
+                }
+                for (int bin : {limit + 1, size / 4, size / 2})
+                    if (bin > limit)
+                        bandlimited = bandlimited && std::abs(harmonic(cycle, size, bin)) < .000001;
+            }
+            require(minimumFundamental > .1, "generated bank lost bass fundamental");
+            require(coherent, "generated frame morph changes harmonic phase");
+            require(bandlimited, "generated cycle contains frequencies beyond harmonic limit");
+        }
+    });
+    test("generated banks load into each oscillator and POSITION changes sound", [] {
+        std::vector<float> bank(16 * 2048);
+        require(sd_generate_wavetable(bank.data(), static_cast<int>(bank.size()), 2048, 4482) == 1,
+                "playback bank generation failed");
+        for (int oscillator = 0; oscillator < 3; ++oscillator) {
+            std::array<Audio, 3> positions;
+            for (int step = 0; step < 3; ++step) {
+                auto e = engine();
+                require(sd_load_wavetable(e.get(), oscillator, bank.data(), static_cast<int>(bank.size()), 2048) == 1,
+                        "generated bank cannot load into oscillator");
+                sd_set_parameter(e.get(), SD_OSC_LEVEL, 0);
+                sd_set_parameter(e.get(), oscillator * 32 + SD_OSC_LEVEL, .7f);
+                sd_set_parameter(e.get(), oscillator * 32 + SD_OSC_POSITION, step * .5f);
+                sd_note_on(e.get(), 36, 1);
+                positions[step] = render(e.get(), kRate / 4);
+                require(finiteBounded(positions[step]) && rms(positions[step].left) > .02,
+                        "generated bank playback is invalid or silent");
+            }
+            require(difference(positions[0].left, positions[1].left) > .005 &&
+                    difference(positions[1].left, positions[2].left) > .005,
+                    "generated bank POSITION does not morph its sound");
+        }
     });
     test("modulation supports macro, envelope and bipolar LFO", [] {
         auto plain = engine(), modulated = engine();

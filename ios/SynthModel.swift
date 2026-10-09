@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import SoundCore
 
 enum SynthPage: String, CaseIterable { case oscillator, filter, envelopes, effects, modulation }
 
@@ -21,11 +22,16 @@ final class SynthModel: ObservableObject {
     }
     @Published var exportDocument = PatchDocument()
     @Published var selectedSource = 1
+    @Published var generatingOscillator: Int?
+    @Published var generatedWavetableNames: [Int: String] = [:]
 
     private var audio = AudioController()
-    private var activeNotes = Set<Int>()
+    private var activeNotes: [Int: Float] = [:]
     private var observers: [NSObjectProtocol] = []
     private var resumeAfterInterruption = false
+    private var generationID: UUID?
+    private var patchRevision: UInt64 = 0
+    private var generatedCounts: [Int: Int] = [:]
 
     init() {
         do { try audio.prepare(patch) } catch { status = error.localizedDescription }
@@ -67,19 +73,80 @@ final class SynthModel: ObservableObject {
         guard let descriptor = ParameterCatalog.descriptor(id), newValue.isFinite else { return }
         var clean = min(descriptor.range.upperBound, max(descriptor.range.lowerBound, newValue))
         if descriptor.isDiscrete { clean = clean.rounded() }
+        if let oscillator = generatingOscillator, (id == oscillator * 32 || id == oscillator * 32 + 1) {
+            invalidateGeneration()
+            status = "Wavetable generation canceled."
+        }
         patch.parameters[String(id)] = clean
         audio.setParameter(id, clean)
+    }
+
+    func transposeOctave(for oscillator: Int, by octaves: Int) {
+        guard (0..<3).contains(oscillator), (-1...1).contains(octaves) else { return }
+        let id = oscillator * 32 + 13
+        set(id, value(id) + Float(octaves))
+    }
+
+    /// Generates original harmonic frames off the main thread, then replaces only
+    /// this oscillator's wavetable. Pitch, levels, envelopes and routes are kept.
+    func generateWavetable(for oscillator: Int) {
+        guard (0..<3).contains(oscillator), generatingOscillator == nil else { return }
+        let id = UUID()
+        let revision = patchRevision
+        let seed = UInt32.random(in: UInt32.min...UInt32.max)
+        generationID = id
+        generatingOscillator = oscillator
+        status = "Creating a new wavetable…"
+
+        Task { [weak self] in
+            let samples: [Float]? = await Task.detached(priority: .userInitiated) {
+                var samples = [Float](repeating: 0, count: 2_048 * 16)
+                let success = samples.withUnsafeMutableBufferPointer { buffer in
+                    sd_generate_wavetable(buffer.baseAddress, Int32(buffer.count), 2_048, seed)
+                }
+                return success == 1 ? samples : nil
+            }.value
+            guard let self, self.generationID == id else { return }
+            defer {
+                if self.generationID == id { self.invalidateGeneration() }
+            }
+            guard self.patchRevision == revision else { return }
+            guard let samples else {
+                self.status = "The wavetable could not be generated. Try again."
+                return
+            }
+            do {
+                var next = self.patch
+                next.wavetables.removeAll { $0.oscillator == oscillator }
+                next.wavetables.append(.init(oscillator: oscillator, samples: samples))
+                next.parameters[String(oscillator * 32)] = 0
+                try self.replacePatch(next.validated(), resumeHeldNotes: true)
+                let count = self.generatedCounts[oscillator, default: 0] + 1
+                self.generatedCounts[oscillator] = count
+                self.generatedWavetableNames[oscillator] = "Generated \(count)"
+                self.status = "New wavetable ready in oscillator \(["A", "B", "C"][oscillator])."
+            } catch {
+                self.status = "Generation failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func invalidateGeneration() {
+        generationID = nil
+        generatingOscillator = nil
     }
 
     func noteOn(_ note: Int, velocity: Float = 0.8) {
         guard (0...127).contains(note), velocity.isFinite else { return }
         if !audioReady { startAudio() }
-        guard audioReady, activeNotes.insert(note).inserted else { return }
-        audio.noteOn(note, min(1, max(0.01, velocity)))
+        guard audioReady, activeNotes[note] == nil else { return }
+        let cleanVelocity = min(1, max(0.01, velocity))
+        activeNotes[note] = cleanVelocity
+        audio.noteOn(note, cleanVelocity)
     }
 
     func noteOff(_ note: Int) {
-        guard activeNotes.remove(note) != nil else { return }
+        guard activeNotes.removeValue(forKey: note) != nil else { return }
         audio.noteOff(note)
     }
 
@@ -94,7 +161,7 @@ final class SynthModel: ObservableObject {
 
     func route(source: Int, destination: Int, amount: Float = 0.4) {
         guard amount.isFinite, (1...4).contains(source), let descriptor = ParameterCatalog.descriptor(destination), !descriptor.isDiscrete else {
-            status = "Mode, table, and unison are fixed selections. Choose a continuous control."
+            status = "Choose a continuous control for modulation."
             return
         }
         if let existing = patch.routes.first(where: { $0.source == source && $0.destination == destination }) {
@@ -133,17 +200,24 @@ final class SynthModel: ObservableObject {
             guard data.count <= SoundPatch.maximumFileBytes else { throw PatchError.invalid("Choose a patch smaller than 32 MB.") }
             let imported = try JSONDecoder().decode(SoundPatch.self, from: data).validated()
             try replacePatch(imported)
+            generatedWavetableNames.removeAll()
             status = "Loaded \(imported.name)"
         } catch { status = "Import failed: \(error.localizedDescription)" }
     }
 
-    private func replacePatch(_ next: SoundPatch) throws {
+    private func replacePatch(_ next: SoundPatch, resumeHeldNotes: Bool = false) throws {
         let wasRunning = audio.isRunning
+        let heldNotes: [Int: Float] = resumeHeldNotes ? activeNotes : [:]
         allNotesOff()
         try audio.prepare(next)
         patch = next
+        patchRevision &+= 1
+        invalidateGeneration()
         audioReady = false
         if wasRunning { startAudio() }
+        if audioReady {
+            for (note, velocity) in heldNotes { noteOn(note, velocity: velocity) }
+        }
     }
 
     func importSample(from url: URL) {
@@ -203,12 +277,17 @@ final class SynthModel: ObservableObject {
             if value(oscillator * 32) == 3 { next.wavetables.removeAll { $0.oscillator == oscillator } }
             if value(oscillator * 32) == 0 { next.parameters[String(oscillator * 32)] = 1 }
             try replacePatch(next.validated())
+            if value(oscillator * 32) == 3 { generatedWavetableNames.removeValue(forKey: oscillator) }
             status = "Loaded \(url.lastPathComponent) into OSC \(["A", "B", "C"][oscillator])"
         } catch { status = "Sample import failed: \(error.localizedDescription)" }
     }
 
     func resetPatch() {
-        do { try replacePatch(.initial); status = "New patch • original tables restored" }
+        do {
+            try replacePatch(.initial)
+            generatedWavetableNames.removeAll()
+            status = "New patch ready"
+        }
         catch { status = error.localizedDescription }
     }
 
@@ -219,8 +298,10 @@ final class SynthModel: ObservableObject {
             next.wavetables.removeAll { $0.oscillator == oscillator }
             next.parameters[String(oscillator * 32 + 1)] = Float(table)
             do { try replacePatch(next) }
-            catch { status = error.localizedDescription }
+            catch { status = error.localizedDescription; return }
         } else { set(oscillator * 32 + 1, Float(table)) }
+        generatedWavetableNames.removeValue(forKey: oscillator)
+        status = "Selected \(["Basic", "Growl", "Hollow"][table]) in oscillator \(["A", "B", "C"][oscillator])."
     }
 
     func importWavetable(from url: URL) {
@@ -250,6 +331,7 @@ final class SynthModel: ObservableObject {
             next.wavetables.append(.init(oscillator: oscillator, samples: samples))
             next.parameters[String(oscillator * 32)] = 0
             try replacePatch(next.validated())
+            generatedWavetableNames.removeValue(forKey: oscillator)
             status = "Imported \(file.length / 2_048)-frame table • \(url.lastPathComponent)"
         } catch { status = "Wavetable import failed: \(error.localizedDescription)" }
     }

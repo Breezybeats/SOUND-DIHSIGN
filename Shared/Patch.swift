@@ -35,7 +35,8 @@ public enum ParameterCatalog {
                 .init(id: offset + 9, name: prefix + "Warp", range: 0...1, defaultValue: 0),
                 .init(id: offset + 10, name: prefix + "Scan", range: 0...1, defaultValue: 0),
                 .init(id: offset + 11, name: prefix + "Grain size", range: 0.01...0.25, defaultValue: 0.08),
-                .init(id: offset + 12, name: prefix + "Density", range: 1...60, defaultValue: 12)
+                .init(id: offset + 12, name: prefix + "Density", range: 1...60, defaultValue: 12),
+                .init(id: offset + 13, name: prefix + "Octave", range: -4...4, defaultValue: 0, isDiscrete: true)
             ]
         }
         values += [
@@ -161,7 +162,7 @@ public struct SoundPatch: Codable, Equatable, Sendable {
             guard let id = Int(key), key == String(id), let descriptor = ParameterCatalog.descriptor(id), value.isFinite, descriptor.range.contains(value) else {
                 throw PatchError.invalid("The patch contains an unknown or out-of-range parameter: \(key).")
             }
-            guard !descriptor.isDiscrete || value.rounded() == value else { throw PatchError.invalid("Mode, table, and unison values must be whole numbers.") }
+            guard !descriptor.isDiscrete || value.rounded() == value else { throw PatchError.invalid("Mode, table, unison, and octave values must be whole numbers.") }
             complete[key] = value
         }
         guard routes.count <= 16 else { throw PatchError.invalid("A patch can contain at most 16 modulation routes.") }

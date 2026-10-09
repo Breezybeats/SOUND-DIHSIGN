@@ -5,12 +5,27 @@ import UniformTypeIdentifiers
 @MainActor
 struct SoundDihsignApp: App {
     @StateObject private var model = SynthModel()
+    @State private var showsIntroduction = true
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some Scene {
         WindowGroup {
-            SynthView(model: model)
-                .preferredColorScheme(.dark)
+            ZStack {
+                SynthView(model: model)
+                    .allowsHitTesting(!showsIntroduction)
+                    .accessibilityHidden(showsIntroduction)
+                if showsIntroduction {
+                    LaunchExperienceView {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                            showsIntroduction = false
+                        }
+                    }
+                    .transition(.opacity)
+                    .zIndex(1)
+                }
+            }
+                .preferredColorScheme(.light)
                 .fileImporter(isPresented: $model.isImportingSample, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
                     switch result {
                     case .success(let urls): if let url = urls.first { model.importSample(from: url) }

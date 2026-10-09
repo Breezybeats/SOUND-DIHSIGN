@@ -13,6 +13,7 @@ struct TouchKeyboard: UIViewRepresentable {
         let view = KeyboardSurface()
         view.isMultipleTouchEnabled = true
         view.backgroundColor = .clear
+        view.overrideUserInterfaceStyle = .light
         view.baseNote = baseNote
         view.octaves = octaves
         view.onNoteOn = onNoteOn
@@ -45,9 +46,21 @@ final class KeyboardSurface: UIView {
     private var fingers: [ObjectIdentifier: Int] = [:]
     private var accessibleNote: Int?
     private var accessibleGeneration: UInt = 0
+    private var keyHighlights: [Int: CGFloat] = [:]
+    private var keyTargets: [Int: CGFloat] = [:]
+    private var keyAnimations: [Int: KeyAnimation] = [:]
+    private var displayLink: CADisplayLink?
+    private var animationDriver: KeyboardAnimationDriver?
     private let whiteSemitones = [0, 2, 4, 5, 7, 9, 11]
     private let blackOffsets: [(boundary: Int, semitone: Int)] = [(1, 1), (2, 3), (4, 6), (5, 8), (6, 10)]
     private let noteNames = ["C", "C sharp", "D", "D sharp", "E", "F", "F sharp", "G", "G sharp", "A", "A sharp", "B"]
+
+    private struct KeyAnimation {
+        let start: CFTimeInterval
+        let duration: CFTimeInterval
+        let from: CGFloat
+        let to: CGFloat
+    }
 
     private var whiteWidth: CGFloat { bounds.width / CGFloat(max(1, octaves * 7)) }
 
@@ -86,41 +99,47 @@ final class KeyboardSurface: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        let textFont = UIFont.monospacedSystemFont(ofSize: min(11, whiteWidth * 0.4), weight: .semibold)
+        let textFont = UIFont.systemFont(ofSize: min(11, whiteWidth * 0.4), weight: .medium)
         for index in 0..<(octaves * 7) {
-            let key = whiteRect(index: index).insetBy(dx: 0.7, dy: 0.6)
             let midi = baseNote + (index / 7) * 12 + whiteSemitones[index % 7]
-            let active = pressed(midi)
-            let path = UIBezierPath(roundedRect: key, cornerRadius: 5)
-            (active ? UIColor(red: 0.34, green: 0.94, blue: 0.79, alpha: 1) :
-                UIColor(red: 0.87, green: 0.90, blue: 0.93, alpha: 1)).setFill()
+            let amount = keyHighlights[midi] ?? (pressed(midi) ? 1 : 0)
+            var key = whiteRect(index: index).insetBy(dx: 0.8, dy: 0.6)
+            key.size.height -= UIAccessibility.isReduceMotionEnabled ? 0 : amount * 2
+            let path = UIBezierPath(roundedRect: key, cornerRadius: 8)
+            blendedColor(from: (0.98, 0.985, 0.995), to: (0, 0.36, 0.88), amount: amount).setFill()
             path.fill()
+            UIColor(red: 0.84, green: 0.86, blue: 0.89, alpha: 1 - amount * 0.7).setStroke()
+            path.lineWidth = 0.65
+            path.stroke()
             if index % 7 == 0 {
                 let title = "C\(midi / 12 - 1)" as NSString
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: textFont,
-                    .foregroundColor: UIColor(red: 0.24, green: 0.31, blue: 0.36, alpha: 1)
+                    .foregroundColor: blendedColor(from: (0.42, 0.45, 0.5), to: (1, 1, 1), amount: amount)
                 ]
                 let size = title.size(withAttributes: attributes)
                 title.draw(at: CGPoint(x: key.midX - size.width / 2, y: key.maxY - size.height - 9), withAttributes: attributes)
             }
-            if active {
-                context.setFillColor(UIColor(red: 0.05, green: 0.33, blue: 0.29, alpha: 0.7).cgColor)
-                context.fillEllipse(in: CGRect(x: key.midX - 2.5, y: key.maxY - 29, width: 5, height: 5))
+            if amount > 0 {
+                context.setFillColor(UIColor.white.withAlphaComponent(amount * 0.9).cgColor)
+                context.fillEllipse(in: CGRect(x: key.midX - 2, y: key.maxY - 28, width: 4, height: 4))
             }
         }
         for octave in 0..<octaves {
             for offset in blackOffsets {
-                let key = blackRect(octave: octave, boundary: offset.boundary)
                 let midi = baseNote + octave * 12 + offset.semitone
-                let active = pressed(midi)
-                let path = UIBezierPath(roundedRect: key, cornerRadius: 4)
-                (active ? UIColor(red: 0.64, green: 0.51, blue: 1, alpha: 1) :
-                    UIColor(red: 0.09, green: 0.12, blue: 0.18, alpha: 1)).setFill()
+                let amount = keyHighlights[midi] ?? (pressed(midi) ? 1 : 0)
+                var key = blackRect(octave: octave, boundary: offset.boundary)
+                key.size.height -= UIAccessibility.isReduceMotionEnabled ? 0 : amount * 1.5
+                let path = UIBezierPath(roundedRect: key, cornerRadius: 6)
+                context.saveGState()
+                context.setShadow(offset: CGSize(width: 0, height: 2), blur: 3, color: UIColor.black.withAlphaComponent(0.13).cgColor)
+                blendedColor(from: (0.16, 0.17, 0.19), to: (0, 0.36, 0.88), amount: amount).setFill()
                 path.fill()
+                context.restoreGState()
                 let inset = key.insetBy(dx: 3, dy: 3)
                 let highlight = UIBezierPath(roundedRect: CGRect(x: inset.minX, y: inset.minY, width: inset.width, height: inset.height - 5), cornerRadius: 3)
-                UIColor.white.withAlphaComponent(active ? 0.12 : 0.035).setFill()
+                UIColor.white.withAlphaComponent(0.045 + amount * 0.06).setFill()
                 highlight.fill()
             }
         }
@@ -142,7 +161,7 @@ final class KeyboardSurface: UIView {
                 onNoteOn(next, min(1, max(0.35, 0.55 + relativeY * 0.45)))
             }
         }
-        setNeedsDisplay()
+        updateKeyAnimations()
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { touches.forEach { move($0) } }
@@ -157,6 +176,11 @@ final class KeyboardSurface: UIView {
         accessibleNote = nil
         accessibleGeneration &+= 1
         notes.forEach(onNoteOff)
+        // Release visuals and notes together; stale highlights must not survive an octave change.
+        stopAnimation()
+        keyHighlights.removeAll()
+        keyTargets.removeAll()
+        keyAnimations.removeAll()
         setNeedsDisplay()
     }
 
@@ -199,13 +223,81 @@ final class KeyboardSurface: UIView {
         let wasPressed = pressed(note)
         accessibleNote = note
         if !wasPressed { onNoteOn(note, 0.8) }
-        setNeedsDisplay()
+        updateKeyAnimations()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self, self.accessibleGeneration == generation, self.accessibleNote == note else { return }
             self.accessibleNote = nil
             if !self.pressed(note) { self.onNoteOff(note) }
-            self.setNeedsDisplay()
+            self.updateKeyAnimations()
         }
+    }
+
+    private func blendedColor(from: (CGFloat, CGFloat, CGFloat), to: (CGFloat, CGFloat, CGFloat), amount: CGFloat) -> UIColor {
+        let value = min(1, max(0, amount))
+        return UIColor(red: from.0 + (to.0 - from.0) * value,
+                       green: from.1 + (to.1 - from.1) * value,
+                       blue: from.2 + (to.2 - from.2) * value, alpha: 1)
+    }
+
+    private func updateKeyAnimations() {
+        let now = CACurrentMediaTime()
+        advanceKeyAnimations(at: now)
+        for note in baseNote..<(baseNote + octaves * 12) {
+            let target: CGFloat = pressed(note) ? 1 : 0
+            guard keyTargets[note, default: 0] != target else { continue }
+            keyTargets[note] = target
+            if UIAccessibility.isReduceMotionEnabled {
+                keyHighlights[note] = target
+                keyAnimations.removeValue(forKey: note)
+            } else {
+                keyAnimations[note] = KeyAnimation(start: now, duration: target == 1 ? 0.09 : 0.18,
+                                                   from: keyHighlights[note, default: 0], to: target)
+            }
+        }
+        if keyAnimations.isEmpty {
+            stopAnimation()
+        } else if displayLink == nil {
+            // The driver holds the keyboard weakly, so a display link cannot retain a closed screen.
+            let driver = KeyboardAnimationDriver()
+            driver.keyboard = self
+            animationDriver = driver
+            let link = CADisplayLink(target: driver, selector: #selector(KeyboardAnimationDriver.tick(_:)))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+        setNeedsDisplay()
+    }
+
+    fileprivate func animationTick(_ link: CADisplayLink) {
+        advanceKeyAnimations(at: CACurrentMediaTime())
+        setNeedsDisplay()
+        if keyAnimations.isEmpty { stopAnimation() }
+    }
+
+    private func advanceKeyAnimations(at time: CFTimeInterval) {
+        var finished: [Int] = []
+        for (note, animation) in keyAnimations {
+            let progress = UIAccessibility.isReduceMotionEnabled ? 1 : min(1, max(0, (time - animation.start) / animation.duration))
+            let eased = CGFloat(1 - pow(1 - progress, 3))
+            keyHighlights[note] = animation.from + (animation.to - animation.from) * eased
+            if progress >= 1 { finished.append(note) }
+        }
+        for note in finished { keyAnimations.removeValue(forKey: note) }
+    }
+
+    private func stopAnimation() {
+        displayLink?.invalidate()
+        displayLink = nil
+        animationDriver = nil
+    }
+}
+
+@MainActor
+private final class KeyboardAnimationDriver: NSObject {
+    weak var keyboard: KeyboardSurface?
+    @objc func tick(_ link: CADisplayLink) {
+        guard let keyboard else { link.invalidate(); return }
+        keyboard.animationTick(link)
     }
 }
 
