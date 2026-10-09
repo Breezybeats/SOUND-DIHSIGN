@@ -1,0 +1,10 @@
+.build/
+build/
+DerivedData/
+Config/*-Info.plist
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
+*.sdpatch
+*.wav
+!examples/*.sdpatch

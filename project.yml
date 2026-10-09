@@ -1,0 +1,86 @@
+name: SoundDihsign
+options:
+  minimumXcodeGenVersion: 2.42.0
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+packages:
+  SoundDihsignCore:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+targets:
+  SoundDihsign:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios
+      - path: Shared
+    dependencies:
+      - package: SoundDihsignCore
+        product: SoundCore
+    info:
+      path: Config/iOS-Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: SOUND DIHSIGN Patch
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.breezybeats.sounddihsign.patch]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.breezybeats.sounddihsign.patch
+            UTTypeDescription: SOUND DIHSIGN Patch
+            UTTypeConformsTo: [public.json]
+            UTTypeTagSpecification:
+              public.filename-extension: [sdpatch]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.breezybeats.sounddihsign
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SOUND DIHSIGN
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  SoundDihsignCompanion:
+    type: application
+    platform: macOS
+    sources:
+      - path: macos
+      - path: Shared
+    dependencies:
+      - package: SoundDihsignCore
+        product: SoundCore
+    info:
+      path: Config/macOS-Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: SOUND DIHSIGN Patch
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.breezybeats.sounddihsign.patch]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.breezybeats.sounddihsign.patch
+            UTTypeDescription: SOUND DIHSIGN Patch
+            UTTypeConformsTo: [public.json]
+            UTTypeTagSpecification:
+              public.filename-extension: [sdpatch]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.breezybeats.sounddihsign.companion
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: SOUND DIHSIGN Companion
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_USER_SELECTED_FILES: readwrite
+        CODE_SIGN_ENTITLEMENTS: macos/Companion.entitlements
+schemes:
+  SoundDihsign:
+    build:
+      targets:
+        SoundDihsign: all
+  SoundDihsignCompanion:
+    build:
+      targets:
+        SoundDihsignCompanion: all
