@@ -39,7 +39,7 @@ The phone generates 16 frames of 2,048 samples off the main thread and embeds th
 
 `project.yml` parses as YAML, both target source directories exist, and the local SoundCore product references are present. The macOS entitlements parse as a plist. Both example `.sdpatch` files parse as JSON. These structural checks do **not** validate Xcode generation, Swift compilation, Swift Codable round trips or App Store signing.
 
-For the interface update, tree-sitter-swift parsed all 12 Swift files under `ios`, `Shared` and `macos` with **0 error or missing nodes**. Both asset catalog `Contents.json` files parse as JSON, and project YAML/source-path checks passed. The iOS project requests light appearance for the system launch screen as well. The parser checks Swift syntax only; it does **not** perform native type checking, resolve Apple SDK APIs or compile the apps.
+For the interface update, tree-sitter-swift parsed all 12 Swift files under `ios`, `Shared` and `macos` with **0 error or missing nodes**. All three asset catalog `Contents.json` files parse as JSON, and project YAML/source-path checks passed. The iOS project's explicit `AppIcon` setting matches `AppIcon.appiconset`; its referenced original PNG was decoded and verified as 1,024 × 1,024 RGB, without transparency. The iOS project requests light appearance for the system launch screen as well. These checks do **not** execute Apple's asset compiler. The Swift parser checks syntax only; it does **not** perform native type checking, resolve Apple SDK APIs or compile the apps.
 
 ## Not executed in this environment
 
