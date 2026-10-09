@@ -1,6 +1,10 @@
 #ifndef SOUND_CORE_H
 #define SOUND_CORE_H
 
+/* SwiftPM uses this file as SoundCore's umbrella header. Export the preset
+ * interface here so Swift's import SoundCore sees both public C APIs. */
+#include "SerumPreset.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
